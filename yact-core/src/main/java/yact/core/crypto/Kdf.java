@@ -43,6 +43,10 @@ public final class Kdf
 	/** Throws unless {@code bytes} can be allocated with a safety margin, after a garbage collection if needed. */
 	static void ensureMemory(long bytes)
 	{
+		// An optional lower limit (property "yact.kdf.maxMemoryBytes"); it can only make YaCT refuse more.
+		long limit = Long.getLong("yact.kdf.maxMemoryBytes", Long.MAX_VALUE);
+		if (bytes > limit)
+			throw new InsufficientMemoryException(bytes, limit);
 		Runtime rt = Runtime.getRuntime();
 		long needed = bytes + (16L << 20); // working buffers and headroom
 		if (available(rt) < needed)

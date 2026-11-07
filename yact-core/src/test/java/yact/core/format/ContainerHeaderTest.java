@@ -161,6 +161,36 @@ class ContainerHeaderTest
 		assertNotNull(changed.unlock(second));
 	}
 
+	/**
+	 * A slot whose Argon2 parameters were inflated (they are not authenticated before
+	 * unlocking) is skipped for lack of memory instead of crashing, and the next slot is tried.
+	 */
+	@Test
+	void unaffordableSlotIsSkipped() throws Exception
+	{
+		char[] second = "second password".toCharArray();
+		byte[] area;
+		try (UnlockedHeader h = create())
+		{
+			h.addPasswordSlot(second, FAST);
+			area = h.header().encode();
+		}
+		area[OFFSET_FIRST_SLOT_BODY + 1] = 0x08; // slot 0: memory 512 MiB + 64 KiB
+		ContainerHeader header = ContainerHeader.parse(area);
+		System.setProperty("yact.kdf.maxMemoryBytes", String.valueOf(64L << 20));
+		try
+		{
+			// The second slot was tried and opened; the manipulation is then caught by the header MAC.
+			assertThrows(IntegrityException.class, () -> header.unlock(second));
+			// Only the manipulated slot matches: report the memory problem, not "wrong password".
+			assertThrows(yact.core.crypto.InsufficientMemoryException.class, () -> header.unlock(PASSWORD));
+		}
+		finally
+		{
+			System.clearProperty("yact.kdf.maxMemoryBytes");
+		}
+	}
+
 	@Test
 	void lastKeySlotCannotBeRemoved()
 	{

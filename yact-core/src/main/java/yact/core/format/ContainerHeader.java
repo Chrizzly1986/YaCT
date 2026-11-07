@@ -14,6 +14,7 @@ import yact.core.codec.ByteReader;
 import yact.core.codec.ByteWriter;
 import yact.core.codec.FormatException;
 import yact.core.crypto.CipherSuite;
+import yact.core.crypto.InsufficientMemoryException;
 import yact.core.crypto.Kdf;
 import yact.core.crypto.Passwords;
 import yact.core.pq.HybridKeyPair;
@@ -169,16 +170,32 @@ public final class ContainerHeader
 	 *
 	 * @throws InvalidCredentialsException if no slot accepts the password
 	 * @throws IntegrityException          if a slot opened but the header was modified
+	 * @throws InsufficientMemoryException if no slot opened and at least one could not be tried
+	 *                                     for lack of memory
 	 */
 	public UnlockedHeader unlock(char[] password) throws InvalidCredentialsException, IntegrityException
 	{
+		// A slot whose (unauthenticated) parameters need more memory than available is skipped, not fatal:
+		// a manipulated extra slot must not stop the genuine one from being tried.
+		InsufficientMemoryException skipped = null;
 		for (KeySlot slot : keySlots)
 			if (slot instanceof PasswordKeySlot ps)
 			{
-				byte[] masterKey = ps.tryUnwrap(password, cipherSuite, containerId);
+				byte[] masterKey;
+				try
+				{
+					masterKey = ps.tryUnwrap(password, cipherSuite, containerId);
+				}
+				catch (InsufficientMemoryException e)
+				{
+					skipped = e;
+					continue;
+				}
 				if (masterKey != null)
 					return verified(masterKey);
 			}
+		if (skipped != null)
+			throw skipped;
 		throw new InvalidCredentialsException();
 	}
 

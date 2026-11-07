@@ -32,8 +32,10 @@ import yact.core.codec.FormatException;
  */
 final class Index
 {
-	static final int MAX_ENTRIES = 10_000_000;
-	static final int MAX_EXTENTS_PER_FILE = 1_000_000;
+	static final int MAX_ENTRIES = 1_000_000;
+	/** Largest encrypted index YaCT writes or reads. */
+	static final long MAX_SEALED_BYTES = 256L << 20;
+	static final int MAX_EXTENTS_PER_FILE = 100_000;
 
 	/** Where a file's encrypted content lives. */
 	record Item(ContainerEntry entry, byte[] salt, List<Extent> extents)

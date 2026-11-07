@@ -246,6 +246,62 @@ class ContainerTest
 		}
 	}
 
+	// ================================================================== hardening
+
+	@Test
+	void windowsUnsafeNamesAreRejected() throws Exception
+	{
+		try (Container c = create())
+		{
+			for (String bad : List.of("a:b.txt", "CON", "con.txt", "NUL", "aux.log", "COM1", "lpt9.dat", "COM\u00b9",
+					"name.", "name ", "dir./x", "a<b", "a>b", "a\"b", "a|b", "a?b", "a*b", "x".repeat(256)))
+				assertThrows(IllegalArgumentException.class, () -> add(c, bad, random(1)), bad);
+			for (String ok : List.of("console.txt", "COM10", "nul-file", ".hidden", "x".repeat(255), "Gr\u00fc\u00dfe"))
+				add(c, ok, random(1));
+		}
+	}
+
+	@Test
+	void pathsDifferingOnlyInCaseAreRejected() throws Exception
+	{
+		try (Container c = create())
+		{
+			add(c, "Docs/Report.pdf", random(1));
+			assertThrows(IllegalArgumentException.class, () -> add(c, "docs/report.PDF", random(1)));
+			add(c, "other", random(1));
+			assertThrows(IllegalArgumentException.class, () -> c.rename("other", "DOCS/REPORT.pdf"));
+			c.add("Docs/Report.pdf", new ByteArrayInputStream(random(2)), TIME, true); // same path: replace is fine
+			c.delete("Docs/Report.pdf");
+			add(c, "docs/report.PDF", random(1)); // the old name is gone
+		}
+	}
+
+	@Test
+	void containerFileIsPrivate() throws Exception
+	{
+		create().close();
+		if (Files.getFileStore(file).supportsFileAttributeView("posix"))
+			assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
+	}
+
+	@Test
+	void extractionDoesNotFollowLinksOutOfTheTargetFolder() throws Exception
+	{
+		Path out = Files.createDirectories(tmp.resolve("out"));
+		Path outside = Files.createDirectories(tmp.resolve("outside"));
+		Files.createSymbolicLink(out.resolve("docs"), outside); // planted by someone else
+		try (Container c = create())
+		{
+			add(c, "docs/secret.txt", "secret".getBytes());
+			IOException e = assertThrows(IOException.class, () -> c.extractAll("", out, false));
+			assertTrue(e.getMessage().contains("link"), e.getMessage());
+		}
+		try (var files = Files.list(outside))
+		{
+			assertEquals(0, files.count(), "nothing written through the link");
+		}
+	}
+
 	// ================================================================== fixed size, free space, wiping
 
 	@Test
@@ -591,36 +647,38 @@ class ContainerTest
 		}
 	}
 
+	/** A crash while the next superblock is written leaves a torn slot; the current state stays readable. */
 	@Test
-	void tornSuperblockFallsBackToThePreviousState() throws Exception
+	void tornSuperblockWriteKeepsTheCurrentState() throws Exception
 	{
-		// The fallback covers a crash while the new superblock is being written. At that moment the old
-		// index is still intact: freed space is only wiped or reused after the superblock is on disk.
-		// With wiping off and enough free space, the old index stays untouched, which recreates that moment.
 		try (Container c = create())
 		{
-			c.setWipeOnDelete(false);
 			add(c, "first", random(10));
-			c.commit();
-			add(c, "second", random(10));
 		}
-		// Generations: 1 = empty (create, slot 1), 2 = "first" (slot 0), 3 = both files (close, slot 1).
-		byte[] original = Files.readAllBytes(file);
-		flipByte(Container.SUPERBLOCK_OFFSET + Superblock.SIZE + 20); // damage generation 3
+		// Generations: 1 = empty (create, slot 1), 2 = "first" (close, slot 0). Slot 1 is where a crash would hit next.
+		flipByte(Container.SUPERBLOCK_OFFSET + Superblock.SIZE + 20);
 		try (Container c = open())
 		{
 			assertEquals(List.of("first"), c.list().stream().map(ContainerEntry::path).toList());
 		}
-		Files.write(file, original);
-		flipByte(Container.SUPERBLOCK_OFFSET + 20); // damage generation 2: generation 3 is still current
-		try (Container c = open())
+	}
+
+	/**
+	 * After a commit the previous superblock is destroyed: damaging the current one must not
+	 * resurrect an older state (deleted files, removed passwords), it makes the container unreadable.
+	 */
+	@Test
+	void olderStateCannotBeResurrected() throws Exception
+	{
+		try (Container c = create())
 		{
-			assertEquals(2, c.list().size());
+			c.setWipeOnDelete(false);
+			add(c, "deleted later", random(10));
+			c.commit();
+			c.delete("deleted later");
 		}
-		try (FileChannel ch = FileChannel.open(file, StandardOpenOption.WRITE))
-		{
-			ch.write(ByteBuffer.allocate(2 * Superblock.SIZE), Container.SUPERBLOCK_OFFSET);
-		}
+		// The current generation is in slot 1 (create: 1, commit: 2 in slot 0, close: 3 in slot 1).
+		flipByte(Container.SUPERBLOCK_OFFSET + Superblock.SIZE + 20);
 		assertThrows(IntegrityException.class, this::open);
 	}
 

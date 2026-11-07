@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import yact.core.crypto.JdkCrypto;
+import yact.core.io.PrivateFiles;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -299,7 +300,8 @@ public class YactApp extends Application
 		worker.submit(Job.<String>of(Messages.get("job.keyPair"), false, job -> {
 			try (HybridKeyPair key = HybridKeyPair.generate(s.kem(), JdkCrypto.random()))
 			{
-				Files.write(priv.get(), KeyFiles.encryptPrivateKey(key, s.password(), s.params(), JdkCrypto.random()));
+				// Readable only by the user, written atomically: never a half-written private key.
+				PrivateFiles.writeAtomically(priv.get(), KeyFiles.encryptPrivateKey(key, s.password(), s.params(), JdkCrypto.random()));
 				Files.writeString(pub.get(), key.publicKey().toArmored(), StandardCharsets.US_ASCII);
 				lastKeyFile = priv.get();
 				return key.publicKey().fingerprint();

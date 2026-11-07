@@ -457,6 +457,8 @@ final class ContainerView extends BorderPane
 		if (entries.isEmpty())
 			return;
 		Map<ContainerEntry, Path> targets = new LinkedHashMap<>();
+		Map<ContainerEntry, String> relative = new LinkedHashMap<>(); // folder extraction: path below the base
+		Path folderBase = null;
 		boolean overwrite;
 		if (sel.size() == 1 && !sel.get(0).directory())
 		{
@@ -477,6 +479,7 @@ final class ContainerView extends BorderPane
 			if (dir == null)
 				return;
 			Path base = dir.toPath().toAbsolutePath().normalize();
+			folderBase = base;
 			for (Item i : sel)
 			{
 				int slash = i.path().lastIndexOf('/');
@@ -484,9 +487,10 @@ final class ContainerView extends BorderPane
 				for (ContainerEntry e : entries)
 					if (e.path().equals(i.path()) || e.path().startsWith(i.path() + "/"))
 					{
-						Path t = base.resolve(e.path().substring(parent.length()).replace('/', File.separatorChar)).normalize();
-						if (t.startsWith(base))
-							targets.putIfAbsent(e, t);
+						String rel = e.path().substring(parent.length());
+						Path t = base.resolve(rel.replace('/', File.separatorChar)).normalize();
+						if (t.startsWith(base) && targets.putIfAbsent(e, t) == null)
+							relative.put(e, rel);
 					}
 			}
 			List<Path> existing = targets.values().stream().filter(p -> Files.exists(p, LinkOption.NOFOLLOW_LINKS)).toList();
@@ -500,6 +504,7 @@ final class ContainerView extends BorderPane
 			}
 		}
 		boolean replace = overwrite;
+		Path base = folderBase;
 		long total = targets.keySet().stream().mapToLong(ContainerEntry::size).sum();
 		run(Job.<Snapshot>of(Messages.get("job.extract"), true, job -> {
 			long done = 0;
@@ -511,7 +516,11 @@ final class ContainerView extends BorderPane
 				if (!replace && Files.exists(t.getValue(), LinkOption.NOFOLLOW_LINKS))
 					continue;
 				job.message(Messages.get("job.extractFile", n, targets.size(), t.getKey().path()));
-				container.extract(t.getKey().path(), t.getValue(), replace, job.progress(done, total));
+				if (base == null)
+					container.extract(t.getKey().path(), t.getValue(), replace, job.progress(done, total));
+				else // checks the real path, so a planted link cannot redirect the file
+					container.extractInto(t.getKey().path(), base, relative.get(t.getKey()), replace,
+							job.progress(done, total));
 				done += t.getKey().size();
 			}
 			return Snapshot.of(container);

@@ -50,12 +50,15 @@ class UiLogicTest
 	void passwordRating()
 	{
 		assertEquals(PasswordRating.TOO_SHORT, PasswordRating.of("short"));
-		assertEquals(PasswordRating.WEAK, PasswordRating.of("abcdefgh"));
-		assertEquals(PasswordRating.OK, PasswordRating.of("abcdefgh12"));
-		assertEquals(PasswordRating.STRONG, PasswordRating.of("Abcdefgh1234"));
+		assertEquals(PasswordRating.TOO_SHORT, PasswordRating.of("abcdefgh12"), "12 characters are required");
+		assertEquals(PasswordRating.WEAK, PasswordRating.of("abcdefghijkl"));
+		assertEquals(PasswordRating.WEAK, PasswordRating.of("aaaaaaaaaaaaaaaaaaaaaa"), "few distinct characters");
+		assertEquals(PasswordRating.WEAK, PasswordRating.of("121212121212121212"), "few distinct characters");
+		assertEquals(PasswordRating.OK, PasswordRating.of("Abcdefgh1234"));
+		assertEquals(PasswordRating.OK, PasswordRating.of("abcdefghijklmn"));
+		assertEquals(PasswordRating.STRONG, PasswordRating.of("Abcdefgh1234wxyz"));
 		assertEquals(PasswordRating.STRONG, PasswordRating.of("correct horse battery"));
-		assertEquals(PasswordRating.TOO_SHORT, PasswordRating.of("🔒🔒🔒🔒"),
-				"counts code points, not chars");
+		assertEquals(PasswordRating.TOO_SHORT, PasswordRating.of("\uD83D\uDD12".repeat(11)), "counts code points, not chars");
 	}
 
 	private static final String[] LANGUAGES = { "", "_de", "_fr", "_es", "_pt" };

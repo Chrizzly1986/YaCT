@@ -139,6 +139,18 @@ public final class UnlockedHeader implements AutoCloseable, Destroyable
 		resign(slots);
 	}
 
+	/**
+	 * Derives the key for one superblock write, from a fresh random salt.
+	 * Separate from {@link #streamKey} so that the two can never coincide.
+	 */
+	public byte[] superblockKey(byte[] salt)
+	{
+		checkAlive();
+		if (salt.length < 16)
+			throw new IllegalArgumentException("superblock salt must be at least 16 bytes");
+		return Kdf.hkdf(masterKey, header.containerId(), "YaCT v1 superblock key", salt);
+	}
+
 	private void resign(List<KeySlot> slots)
 	{
 		header = ContainerHeader.sign(header.cipherSuite(), header.chunkExponent(), header.containerId(), slots, masterKey);

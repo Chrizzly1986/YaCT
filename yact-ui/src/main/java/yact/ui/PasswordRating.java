@@ -12,7 +12,8 @@ enum PasswordRating
 {
 	TOO_SHORT, WEAK, OK, STRONG;
 
-	static final int MIN_LENGTH = 8;
+	/** For new passwords; unlocking accepts any password. */
+	static final int MIN_LENGTH = 12;
 
 	static PasswordRating of(CharSequence pw)
 	{
@@ -33,9 +34,12 @@ enum PasswordRating
 				other = true;
 		}
 		int classes = (lower ? 1 : 0) + (upper ? 1 : 0) + (digit ? 1 : 0) + (other ? 1 : 0);
-		if (length >= 16 || (length >= 12 && classes >= 3))
+		long distinct = pw.codePoints().distinct().count();
+		if (distinct < 6)
+			return WEAK; // "aaaaaaaaaaaa", "121212121212"
+		if (length >= 20 || (length >= 16 && classes >= 3))
 			return STRONG;
-		if (length >= 10 && classes >= 2)
+		if (length >= 14 || classes >= 3)
 			return OK;
 		return WEAK;
 	}

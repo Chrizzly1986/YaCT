@@ -32,6 +32,10 @@ final class ErrorMessages
 			e = e.getCause();
 		if (e instanceof InvalidCredentialsException)
 			return Messages.get("error.credentials");
+		if (e instanceof yact.core.crypto.InsufficientMemoryException m)
+			return Messages.get("error.memory", Sizes.format(m.needed()));
+		if (e instanceof yact.core.crypto.SelfTest.SelfTestFailedException)
+			return Messages.get("error.selftest", e.getMessage());
 		if (e instanceof IntegrityException)
 			return Messages.get("error.integrity");
 		if (e instanceof ContainerFormatException)

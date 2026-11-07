@@ -32,8 +32,8 @@ import yact.core.format.UnlockedHeader;
  * 30    zero
  * </pre>
  *
- * <p>Key = stream key for the salt; the salt is fresh for every write, so the
- * all-zero nonce is never reused under one key.
+ * <p>Key = HKDF(master key, "YaCT v1 superblock key", salt); the salt is fresh
+ * for every write, so the all-zero nonce is never reused under one key.
  */
 record Superblock(long generation, byte[] indexSalt, List<Extent> indexExtents)
 {
@@ -66,7 +66,7 @@ record Superblock(long generation, byte[] indexSalt, List<Extent> indexExtents)
 			w.u63(e.offset()).u63(e.length());
 		byte[] plain = java.util.Arrays.copyOf(w.toByteArray(), PLAIN_LENGTH);
 
-		byte[] key = keys.streamKey(salt);
+		byte[] key = keys.superblockKey(salt);
 		try
 		{
 			byte[] sealed = keys.header().cipherSuite().seal(key, ZERO_NONCE, AAD, plain);
@@ -85,7 +85,7 @@ record Superblock(long generation, byte[] indexSalt, List<Extent> indexExtents)
 	static Superblock decode(byte[] slot, UnlockedHeader keys)
 	{
 		byte[] salt = java.util.Arrays.copyOf(slot, SALT_LENGTH);
-		byte[] key = keys.streamKey(salt);
+		byte[] key = keys.superblockKey(salt);
 		try
 		{
 			byte[] plain = keys.header().cipherSuite().open(key, ZERO_NONCE, AAD, slot, SALT_LENGTH,

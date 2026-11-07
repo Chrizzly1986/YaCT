@@ -33,6 +33,7 @@ import yact.core.crypto.Argon2Params;
 import yact.core.crypto.CipherSuite;
 import yact.core.crypto.Passwords;
 import yact.core.crypto.SelfTest;
+import yact.core.io.PrivateFiles;
 import yact.core.format.ContainerFormatException;
 import yact.core.format.ContainerHeader;
 import yact.core.format.IntegrityException;
@@ -107,6 +108,8 @@ public final class Container implements Closeable
 	private final UnlockedHeader keys;
 	private long size;
 	private TreeMap<String, Index.Item> items;
+	/** Case-folded path -> path, to reject paths that differ only in case. */
+	private final java.util.HashMap<String, String> foldedPaths = new java.util.HashMap<>();
 	/** Bytes the encoded index currently needs. */
 	private long indexBytes;
 	/**
@@ -167,7 +170,7 @@ public final class Container implements Closeable
 		FileChannel ch;
 		try
 		{
-			ch = FileChannel.open(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ, StandardOpenOption.WRITE);
+			ch = PrivateFiles.createNew(file, StandardOpenOption.READ);
 		}
 		catch (IOException e)
 		{
@@ -400,17 +403,38 @@ public final class Container implements Closeable
 	public void extractAll(String directory, Path targetDir, boolean overwrite) throws IOException
 	{
 		checkOpen();
-		Path base = targetDir.toAbsolutePath().normalize();
 		String dir = VaultPaths.normalizeDirectory(directory);
 		for (ContainerEntry e : list(dir))
 		{
 			String relative = dir.isEmpty() ? e.path() : e.path().substring(dir.length() + 1);
-			Path target = base.resolve(relative.replace('/', base.getFileSystem().getSeparator().charAt(0))).normalize();
-			// Paths are validated on read and on add; this is a second line of defence.
-			if (!target.startsWith(base))
-				throw new IOException("refusing to write outside the target directory: " + e.path());
-			extract(e.path(), target, overwrite);
+			extractInto(e.path(), targetDir, relative, overwrite, ProgressListener.NONE);
 		}
+	}
+
+	/**
+	 * Decrypts {@code path} to {@code baseDir/relative}, creating folders as
+	 * needed. Refuses to write anywhere outside {@code baseDir}, also through
+	 * symbolic links planted inside it.
+	 *
+	 * @param relative relative path below {@code baseDir}, with {@code /} as separator
+	 */
+	public void extractInto(String path, Path baseDir, String relative, boolean overwrite, ProgressListener progress)
+			throws IOException
+	{
+		checkOpen();
+		VaultPaths.check(relative);
+		Path base = baseDir.toAbsolutePath().normalize();
+		Path target = base.resolve(relative.replace('/', base.getFileSystem().getSeparator().charAt(0))).normalize();
+		if (!target.startsWith(base))
+			throw new IOException("refusing to write outside the target folder: " + relative);
+		Files.createDirectories(target.getParent());
+		// Lexical checks do not see symbolic links: compare the real locations.
+		Path realBase = base.toRealPath();
+		if (!target.getParent().toRealPath().startsWith(realBase))
+			throw new IOException("refusing to follow a link out of the target folder: " + relative);
+		if (Files.isSymbolicLink(target))
+			throw new IOException("refusing to replace a symbolic link: " + target);
+		extract(path, target, overwrite, progress);
 	}
 
 	// ================================================================== writing
@@ -435,7 +459,10 @@ public final class Container implements Closeable
 		String p = VaultPaths.normalize(path);
 		if (items.containsKey(p) && !overwrite)
 			throw new FileAlreadyExistsException(p);
+		if (!items.containsKey(p) && items.size() >= Index.MAX_ENTRIES)
+			throw new IOException("a container holds at most " + Index.MAX_ENTRIES + " files");
 		checkNoFileDirectoryClash(p);
+		checkNoCaseOnlyDuplicate(p);
 		if (sizeHint >= 0 && sealedSize(sizeHint) > freeBytes())
 			throw new ContainerFullException("not enough space for " + p, freeBytes());
 
@@ -558,6 +585,7 @@ public final class Container implements Closeable
 		try
 		{
 			checkNoFileDirectoryClash(t);
+			checkNoCaseOnlyDuplicate(t);
 		}
 		catch (IllegalArgumentException e)
 		{
@@ -570,6 +598,7 @@ public final class Container implements Closeable
 	private void putItem(Index.Item it)
 	{
 		Index.Item old = items.put(it.entry().path(), it);
+		foldedPaths.put(VaultPaths.fold(it.entry().path()), it.entry().path());
 		if (old != null)
 			indexBytes -= old.encodedSize();
 		indexBytes += it.encodedSize();
@@ -581,6 +610,7 @@ public final class Container implements Closeable
 		Index.Item old = items.remove(path);
 		if (old != null)
 		{
+			foldedPaths.remove(VaultPaths.fold(path));
 			indexBytes -= old.encodedSize();
 			dirty = true;
 		}
@@ -595,6 +625,18 @@ public final class Container implements Closeable
 		String child = items.ceilingKey(p + "/");
 		if (child != null && child.startsWith(p + "/"))
 			throw new IllegalArgumentException("'" + p + "' is a directory");
+	}
+
+	/**
+	 * Rejects a path that differs from an existing one only in upper/lower case.
+	 * Windows and macOS treat such names as the same file, so extracting both would
+	 * silently overwrite one with the other.
+	 */
+	private void checkNoCaseOnlyDuplicate(String p)
+	{
+		String existing = foldedPaths.get(VaultPaths.fold(p));
+		if (existing != null && !existing.equals(p))
+			throw new IllegalArgumentException("'" + p + "' differs from '" + existing + "' only in upper/lower case");
 	}
 
 	/** True if there are changes that {@link #commit()} has not yet persisted. */
@@ -617,6 +659,8 @@ public final class Container implements Closeable
 		if (!dirty)
 			return;
 		byte[] index = Index.encode(items);
+		if (sealedSize(index.length) > Index.MAX_SEALED_BYTES)
+			throw new IOException("too many files in one container");
 		byte[] indexSalt = randomBytes(Superblock.SALT_LENGTH);
 		List<Extent> target = claimForIndex(sealedSize(index.length));
 		try
@@ -635,6 +679,12 @@ public final class Container implements Closeable
 		channel.force(true);
 		current = next;
 		dirty = false;
+
+		// The new state is durable: destroy the previous superblock, so that damaging the new one
+		// can never bring an older state (with deleted files or removed entries) back.
+		long previous = SUPERBLOCK_OFFSET + (long) (1 - next.slot()) * Superblock.SIZE;
+		RandomFill.fill(channel, List.of(new Extent(previous, Superblock.SIZE)), ProgressListener.NONE);
+		channel.force(true);
 
 		ExtentSet live = liveExtents();
 		ExtentSet freed = allocated.minus(live);
@@ -973,6 +1023,9 @@ public final class Container implements Closeable
 
 		ExtentSet used = new ExtentSet();
 		claimChecked(used, sb.indexExtents());
+		long indexLength = sb.indexExtents().stream().mapToLong(Extent::length).sum();
+		if (indexLength > Index.MAX_SEALED_BYTES)
+			throw new IntegrityException("index is larger than supported");
 		byte[] data;
 		try (InputStream in = openStream(sb.indexSalt(), sb.indexExtents(), INDEX_AAD))
 		{
@@ -987,10 +1040,12 @@ public final class Container implements Closeable
 			throw new IntegrityException("index is inconsistent: " + e.getMessage());
 		}
 		indexBytes = 4;
+		foldedPaths.clear();
 		for (Index.Item it : items.values())
 		{
 			claimChecked(used, it.extents());
 			indexBytes += it.encodedSize();
+			foldedPaths.put(VaultPaths.fold(it.entry().path()), it.entry().path());
 		}
 		allocated = used;
 		current = sb;

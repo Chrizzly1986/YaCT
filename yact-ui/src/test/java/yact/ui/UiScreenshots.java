@@ -112,7 +112,7 @@ class UiScreenshots
 				new Argon2Params(64, 1, 1), 64L << 20, ProgressListener.NONE);
 		for (String p : List.of("Verträge/Mietvertrag 2026.pdf", "Verträge/Versicherung.pdf", "Fotos/Urlaub/IMG_0001.jpg",
 				"Fotos/Urlaub/IMG_0002.jpg", "Steuer/2025/Erklärung.pdf", "Passwörter.kdbx", "Notizen.txt"))
-			c.add(p, new ByteArrayInputStream(new byte[(int) (Math.abs(p.hashCode()) % 3_000_000)]),
+			c.add(p, new ByteArrayInputStream(new byte[Math.abs(p.hashCode()) % 3_000_000]),
 					Instant.parse("2026-10-14T09:30:00Z"), false);
 		c.addPublicKeySlot(HybridKeyPair.generate(HybridKem.DEFAULT, new java.security.SecureRandom()).publicKey());
 		c.commit();
