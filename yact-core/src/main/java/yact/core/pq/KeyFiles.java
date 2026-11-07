@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
-import org.bouncycastle.crypto.InvalidCipherTextException;
+import javax.crypto.AEADBadTagException;
 
 import yact.core.codec.ByteReader;
 import yact.core.codec.ByteWriter;
@@ -16,6 +16,7 @@ import yact.core.crypto.Argon2Params;
 import yact.core.crypto.CipherSuite;
 import yact.core.crypto.Kdf;
 import yact.core.crypto.Passwords;
+import yact.core.crypto.SelfTest;
 import yact.core.format.InvalidCredentialsException;
 
 /**
@@ -52,6 +53,7 @@ public final class KeyFiles
 	/** Encrypts the private key under {@code password}. */
 	public static byte[] encryptPrivateKey(HybridKeyPair key, char[] password, Argon2Params params, SecureRandom random)
 	{
+		SelfTest.require();
 		byte[] salt = new byte[SALT_LENGTH];
 		byte[] nonce = new byte[CipherSuite.NONCE_LENGTH];
 		random.nextBytes(salt);
@@ -84,6 +86,7 @@ public final class KeyFiles
 	public static HybridKeyPair decryptPrivateKey(byte[] file, char[] password)
 			throws FormatException, InvalidCredentialsException
 	{
+		SelfTest.require();
 		ByteReader r = new ByteReader(file);
 		if (!Arrays.equals(r.bytes(MAGIC.length), MAGIC))
 			throw new FormatException("not a YaCT private key file");
@@ -116,7 +119,7 @@ public final class KeyFiles
 			secret = SUITE.open(kek, nonce, Arrays.copyOf(file, headLength), sealed);
 			return HybridKeyPair.fromPrivateBytes(kem, secret);
 		}
-		catch (InvalidCipherTextException e)
+		catch (AEADBadTagException e)
 		{
 			throw new InvalidCredentialsException();
 		}

@@ -10,7 +10,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
+import javax.crypto.AEADBadTagException;
+
 import org.bouncycastle.crypto.InvalidCipherTextException;
+import org.bouncycastle.crypto.modes.ChaCha20Poly1305;
 import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.modes.GCMBlockCipher;
 import org.bouncycastle.crypto.params.AEADParameters;
@@ -28,7 +31,8 @@ class CipherSuiteTest
 	@Test
 	void aesUsesTheJdkProvider()
 	{
-		assertEquals("SunJCE", CipherSuite.AES_256_GCM.implementation());
+		assertEquals("SunJCE (JDK)", CipherSuite.AES_256_GCM.implementation());
+		assertEquals("SunJCE (JDK)", CipherSuite.CHACHA20_POLY1305.implementation());
 	}
 
 	/**
@@ -37,7 +41,7 @@ class CipherSuiteTest
 	 */
 	@ParameterizedTest
 	@ValueSource(ints = { 0, 1, 15, 16, 17, 1000, 65536 })
-	void jdkAesGcmMatchesBouncyCastle(int length) throws InvalidCipherTextException
+	void jdkAesGcmMatchesBouncyCastle(int length) throws Exception
 	{
 		byte[] key = random(32);
 		byte[] nonce = random(12);
@@ -51,9 +55,29 @@ class CipherSuiteTest
 		assertArrayEquals(plain, CipherSuite.AES_256_GCM.open(key, nonce, aad, bc));
 	}
 
+	/** The JDK's ChaCha20-Poly1305 must equal BouncyCastle's, byte for byte, in both directions. */
+	@ParameterizedTest
+	@ValueSource(ints = { 0, 1, 63, 64, 65, 1000, 65536 })
+	void jdkChaChaMatchesBouncyCastle(int length) throws Exception
+	{
+		byte[] key = random(32);
+		byte[] nonce = random(12);
+		byte[] aad = random(length % 50);
+		byte[] plain = random(length);
+
+		byte[] jdk = CipherSuite.CHACHA20_POLY1305.seal(key, nonce, aad, plain);
+		ChaCha20Poly1305 bc = new ChaCha20Poly1305();
+		bc.init(true, new AEADParameters(new KeyParameter(key), 128, nonce, aad));
+		byte[] out = new byte[bc.getOutputSize(plain.length)];
+		int n = bc.processBytes(plain, 0, plain.length, out, 0);
+		n += bc.doFinal(out, n);
+		assertArrayEquals(Arrays.copyOf(out, n), jdk);
+		assertArrayEquals(plain, CipherSuite.CHACHA20_POLY1305.open(key, nonce, aad, jdk));
+	}
+
 	/** McGrew/Viega GCM spec, test case 16: AES-256, 60-byte plaintext, 20-byte AAD. */
 	@Test
-	void aes256GcmKnownAnswerWithAad() throws InvalidCipherTextException
+	void aes256GcmKnownAnswerWithAad() throws Exception
 	{
 		byte[] key = Hex.decode("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308");
 		byte[] nonce = Hex.decode("cafebabefacedbaddecaf888");
@@ -68,7 +92,7 @@ class CipherSuiteTest
 
 	@ParameterizedTest
 	@EnumSource(CipherSuite.class)
-	void rangesAndTampering(CipherSuite suite) throws InvalidCipherTextException
+	void rangesAndTampering(CipherSuite suite) throws Exception
 	{
 		byte[] key = random(32);
 		byte[] nonce = random(12);
@@ -81,8 +105,8 @@ class CipherSuiteTest
 		assertArrayEquals(Arrays.copyOfRange(buffer, 10, 60), suite.open(key, nonce, new byte[0], padded, 3, sealed.length));
 
 		sealed[sealed.length - 1] ^= 1;
-		assertThrows(InvalidCipherTextException.class, () -> suite.open(key, nonce, new byte[0], sealed));
-		assertThrows(InvalidCipherTextException.class, () -> suite.open(key, nonce, new byte[0], new byte[5]));
+		assertThrows(AEADBadTagException.class, () -> suite.open(key, nonce, new byte[0], sealed));
+		assertThrows(AEADBadTagException.class, () -> suite.open(key, nonce, new byte[0], new byte[5]));
 		assertThrows(IllegalArgumentException.class, () -> suite.seal(new byte[16], nonce, new byte[0], buffer));
 		assertThrows(IllegalArgumentException.class, () -> suite.seal(key, new byte[8], new byte[0], buffer));
 	}

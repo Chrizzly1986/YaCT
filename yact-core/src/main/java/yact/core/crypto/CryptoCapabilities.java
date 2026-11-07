@@ -3,58 +3,27 @@
  ******************************************************************************/
 package yact.core.crypto;
 
-import java.security.SecureRandom;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
-import java.util.function.BiPredicate;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
-import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
-import org.bouncycastle.crypto.SecretWithEncapsulation;
-import org.bouncycastle.crypto.CryptoException;
-import org.bouncycastle.crypto.InvalidCipherTextException;
-import org.bouncycastle.crypto.agreement.X25519Agreement;
-import org.bouncycastle.crypto.digests.SHA3Digest;
-import org.bouncycastle.crypto.generators.Argon2BytesGenerator;
-import org.bouncycastle.crypto.generators.HKDFBytesGenerator;
-import org.bouncycastle.crypto.generators.MLDSAKeyPairGenerator;
-import org.bouncycastle.crypto.generators.MLKEMKeyPairGenerator;
-import org.bouncycastle.crypto.generators.SLHDSAKeyPairGenerator;
-import org.bouncycastle.crypto.generators.X25519KeyPairGenerator;
-import org.bouncycastle.crypto.kems.MLKEMExtractor;
-import org.bouncycastle.crypto.kems.MLKEMGenerator;
-import org.bouncycastle.crypto.params.Argon2Parameters;
-import org.bouncycastle.crypto.params.HKDFParameters;
-import org.bouncycastle.crypto.params.MLDSAKeyGenerationParameters;
-import org.bouncycastle.crypto.params.MLDSAParameters;
-import org.bouncycastle.crypto.params.MLKEMKeyGenerationParameters;
-import org.bouncycastle.crypto.params.MLKEMParameters;
-import org.bouncycastle.crypto.params.MLKEMPrivateKeyParameters;
-import org.bouncycastle.crypto.params.ParametersWithRandom;
-import org.bouncycastle.crypto.params.SLHDSAKeyGenerationParameters;
-import org.bouncycastle.crypto.params.SLHDSAParameters;
-import org.bouncycastle.crypto.params.X25519KeyGenerationParameters;
-import org.bouncycastle.crypto.signers.MLDSASigner;
-import org.bouncycastle.crypto.signers.SLHDSASigner;
+import javax.crypto.AEADBadTagException;
 
-import yact.core.pq.Hybrid;
 import yact.core.pq.HybridKem;
-import yact.core.pq.HybridKeyPair;
+import yact.core.pq.PqSelfTest;
 
 /**
- * Checks at runtime that every cryptographic primitive YaCT relies on is
- * present and behaves correctly in the current runtime.
+ * Known-answer self-test of every cryptographic primitive YaCT uses.
  *
- * <p>Each check runs a small self-test (round trip and, where it applies,
- * rejection of tampered input). This is not a replacement for known-answer
- * tests: those live in the test suite. The purpose is a quick "does this
- * installation work" answer that the UI and the command line can show.
- *
- * <p>All primitives are used through the BouncyCastle lightweight API so
- * behaviour does not depend on JCA provider registration or on the JDK
- * version (JDK 21 has no built-in ML-KEM or ML-DSA).
+ * <p>Each primitive must reproduce published test vectors (NIST, RFC) or, for
+ * HKDF-SHA3-256 which has none, a value computed with an independent
+ * implementation. A round trip alone would not notice an implementation that
+ * was tampered with, e.g. one that ignores its key; a known answer does.
+ * {@link SelfTest#require()} runs this before any container is created or
+ * opened.
  */
 public final class CryptoCapabilities
 {
@@ -63,7 +32,7 @@ public final class CryptoCapabilities
 	{
 	}
 
-	private static final SecureRandom RANDOM = new SecureRandom();
+	private static final HexFormat HEX = HexFormat.of();
 
 	private CryptoCapabilities()
 	{
@@ -73,16 +42,17 @@ public final class CryptoCapabilities
 	public static List<Capability> check()
 	{
 		List<Capability> result = new ArrayList<>();
+		result.add(run("Random generator", "Keys, salts, nonces", false, CryptoCapabilities::random));
 		result.add(run("AES-256-GCM", "Data encryption (default)", false, CryptoCapabilities::aesGcm));
-		result.add(run("ChaCha20-Poly1305", "Data encryption (alternative)", false, CryptoCapabilities::chaCha20Poly1305));
+		result.add(run("ChaCha20-Poly1305", "Data encryption (alternative)", false, CryptoCapabilities::chaCha));
+		result.add(run("SHA3-256", "Fingerprints", false, CryptoCapabilities::sha3));
+		result.add(run("HKDF-SHA3-256", "Key derivation, header MAC", false, CryptoCapabilities::hkdf));
+		result.add(run("BLAKE2b", "Inside Argon2id", false, CryptoCapabilities::blake2b));
 		result.add(run("Argon2id", "Password-based key derivation", false, CryptoCapabilities::argon2id));
-		result.add(run("HKDF-SHA3-256", "Key derivation / combining secrets", false, CryptoCapabilities::hkdf));
-		result.add(run("X25519", "Classical half of hybrid key slot", false, CryptoCapabilities::x25519));
-		result.add(run("ML-KEM-768", "PQ key encapsulation (FIPS 203)", true, () -> mlKem(MLKEMParameters.ml_kem_768)));
-		result.add(run("ML-KEM-1024", "PQ key encapsulation (FIPS 203)", true, () -> mlKem(MLKEMParameters.ml_kem_1024)));
-		result.add(run("Hybrid KEM", "PQ key slot: ML-KEM-1024 + X25519", true, CryptoCapabilities::hybrid));
-		result.add(run("ML-DSA-65", "PQ signature (FIPS 204)", true, CryptoCapabilities::mlDsa));
-		result.add(run("SLH-DSA-SHA2-128s", "PQ hash-based signature (FIPS 205)", true, CryptoCapabilities::slhDsa));
+		result.add(run("X25519", "Classical half of key entries", false, PqSelfTest::x25519));
+		result.add(run("ML-KEM-768", "PQ key encapsulation (FIPS 203)", true, () -> PqSelfTest.mlKem(HybridKem.MLKEM768_X25519)));
+		result.add(run("ML-KEM-1024", "PQ key encapsulation (FIPS 203)", true, () -> PqSelfTest.mlKem(HybridKem.MLKEM1024_X25519)));
+		result.add(run("Hybrid KEM", "PQ key entries: ML-KEM + X25519", true, PqSelfTest::hybrid));
 		return result;
 	}
 
@@ -104,245 +74,131 @@ public final class CryptoCapabilities
 		}
 	}
 
-	// ---------------------------------------------------------------- AEAD
+	// ---------------------------------------------------------------- tests
 
+	private static String random()
+	{
+		JdkCrypto.verify();
+		byte[] a = JdkCrypto.randomBytes(32);
+		byte[] b = JdkCrypto.randomBytes(32);
+		check(!Arrays.equals(a, b) && !Arrays.equals(a, new byte[32]), "random output repeats");
+		return "DRBG (Hash_DRBG, 256 bit); providers: " + JdkCrypto.describe();
+	}
+
+	/** McGrew/Viega GCM specification, test case 16 (AES-256, 60-byte plaintext, 20-byte AAD). */
 	private static String aesGcm()
 	{
-		return aead(CipherSuite.AES_256_GCM);
+		return aead(CipherSuite.AES_256_GCM,
+				"feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308",
+				"cafebabefacedbaddecaf888",
+				"feedfacedeadbeeffeedfacedeadbeefabaddad2",
+				"d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+				"522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662"
+						+ "76fc6ece0f4e1768cddf8853bb2d551b");
 	}
 
-	private static String chaCha20Poly1305()
+	/** RFC 8439, section 2.8.2. */
+	private static String chaCha()
 	{
-		return aead(CipherSuite.CHACHA20_POLY1305);
+		return aead(CipherSuite.CHACHA20_POLY1305,
+				"808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+				"070000004041424344454647",
+				"50515253c0c1c2c3c4c5c6c7",
+				HEX.formatHex(("Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, "
+						+ "sunscreen would be it.").getBytes(StandardCharsets.US_ASCII)),
+				"d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b6116"
+						+ "1ae10b594f09e26a7e902ecbd0600691");
 	}
 
-	/** Round trip and tamper check through {@link CipherSuite}, i.e. the code path containers use. */
-	private static String aead(CipherSuite suite)
+	private static String aead(CipherSuite suite, String key, String nonce, String aad, String plain, String sealed)
 	{
-		byte[] key = random(CipherSuite.KEY_LENGTH);
-		byte[] nonce = random(CipherSuite.NONCE_LENGTH);
-		byte[] aad = "yact-selftest".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-		byte[] plain = random(1000);
-
-		byte[] sealed = suite.seal(key, nonce, aad, plain);
+		byte[] k = HEX.parseHex(key);
+		byte[] n = HEX.parseHex(nonce);
+		byte[] a = HEX.parseHex(aad);
+		byte[] expected = HEX.parseHex(sealed);
+		check(Arrays.equals(suite.seal(k, n, a, HEX.parseHex(plain)), expected), "encryption");
 		try
 		{
-			check(Arrays.equals(plain, suite.open(key, nonce, aad, sealed)), "round trip failed");
+			check(Arrays.equals(suite.open(k, n, a, expected), HEX.parseHex(plain)), "decryption");
 		}
-		catch (InvalidCipherTextException e)
+		catch (AEADBadTagException e)
 		{
-			throw new IllegalStateException("round trip failed", e);
+			throw new IllegalStateException("valid ciphertext rejected", e);
 		}
-
-		sealed[sealed.length / 2] ^= 1;
+		expected[expected.length / 2] ^= 1;
 		boolean rejected;
 		try
 		{
-			suite.open(key, nonce, aad, sealed);
+			suite.open(k, n, a, expected);
 			rejected = false;
 		}
-		catch (InvalidCipherTextException e)
+		catch (AEADBadTagException e)
 		{
 			rejected = true;
 		}
-		check(rejected, "tampered ciphertext was accepted");
-		return suite.implementation() + ", 256-bit key, 128-bit tag";
+		check(rejected, "tampered ciphertext accepted");
+		return "test vector, " + suite.implementation();
 	}
 
-	// ---------------------------------------------------------------- KDFs
-
-	private static String argon2id()
+	/** FIPS 202 example: SHA3-256("abc"). */
+	private static String sha3()
 	{
-		// Deliberately small parameters: this only proves the implementation works.
-		Argon2Parameters params = new Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
-				.withVersion(Argon2Parameters.ARGON2_VERSION_13)
-				.withSalt(random(16))
-				.withIterations(1)
-				.withMemoryAsKB(1024)
-				.withParallelism(1)
-				.build();
-		byte[] password = "selftest".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-		byte[] a = argon2(params, password);
-		byte[] b = argon2(params, password);
-		check(Arrays.equals(a, b), "not deterministic");
-		check(!Arrays.equals(a, argon2(params, "selftesT".getBytes(java.nio.charset.StandardCharsets.UTF_8))),
-				"different passwords give the same key");
-		return "Argon2 v1.3, id variant";
+		check(HEX.formatHex(JdkCrypto.sha3_256().digest("abc".getBytes(StandardCharsets.US_ASCII)))
+				.equals("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"), "SHA3-256");
+		return "FIPS 202 example, " + JdkCrypto.sha3_256().getProvider().getName() + " (JDK)";
 	}
 
-	static byte[] argon2(Argon2Parameters params, byte[] password)
-	{
-		Argon2BytesGenerator gen = new Argon2BytesGenerator();
-		gen.init(params);
-		byte[] out = new byte[32];
-		gen.generateBytes(password, out);
-		return out;
-	}
-
+	/** Value computed with Python's hashlib/hmac, independent of Java and BouncyCastle. */
 	private static String hkdf()
 	{
-		byte[] ikm = random(32);
-		byte[] a = hkdf(ikm, "a");
-		check(Arrays.equals(a, hkdf(ikm, "a")), "not deterministic");
-		check(!Arrays.equals(a, hkdf(ikm, "b")), "info is ignored");
-		return "HKDF (RFC 5869) over SHA3-256";
+		byte[] ikm = new byte[22];
+		Arrays.fill(ikm, (byte) 0x0b);
+		byte[] salt = new byte[13];
+		for (int i = 0; i < salt.length; i++)
+			salt[i] = (byte) i;
+		check(HEX.formatHex(Kdf.hkdf(ikm, salt, "YaCT self-test", new byte[] { 1, 2, 3 }))
+				.equals("9ac13352094187a7d814e4c6fbb834be09e01af34868702953fece4206eb5312"), "HKDF-SHA3-256");
+		return "independent reference value, HMAC from " + JdkCrypto.hmacSha3_256().getProvider().getName() + " (JDK)";
 	}
 
-	private static byte[] hkdf(byte[] ikm, String info)
+	/** RFC 7693, appendix A. */
+	private static String blake2b()
 	{
-		HKDFBytesGenerator gen = new HKDFBytesGenerator(new SHA3Digest(256));
-		gen.init(new HKDFParameters(ikm, null, info.getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
-		byte[] out = new byte[32];
-		gen.generateBytes(out, 0, out.length);
-		return out;
+		check(HEX.formatHex(Blake2b.hash(64, "abc".getBytes(StandardCharsets.US_ASCII))).equals(
+				"ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"),
+				"BLAKE2b-512");
+		return "RFC 7693 vector, YaCT implementation";
 	}
 
-	// ---------------------------------------------------------------- key agreement / KEM
-
-	private static String x25519()
+	/** RFC 9106, section 5.3. */
+	private static String argon2id()
 	{
-		X25519KeyPairGenerator gen = new X25519KeyPairGenerator();
-		gen.init(new X25519KeyGenerationParameters(RANDOM));
-		AsymmetricCipherKeyPair alice = gen.generateKeyPair();
-		AsymmetricCipherKeyPair bob = gen.generateKeyPair();
-
-		check(Arrays.equals(agree(alice, bob), agree(bob, alice)), "shared secrets differ");
-		return "RFC 7748";
+		byte[] tag = Argon2id.hash(fill(32, 1), fill(16, 2), fill(8, 3), fill(12, 4), 32, 3, 4, 32);
+		check(HEX.formatHex(tag).equals("0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"), "Argon2id");
+		return "RFC 9106 vector, YaCT implementation";
 	}
 
-	private static byte[] agree(AsymmetricCipherKeyPair self, AsymmetricCipherKeyPair peer)
+	private static byte[] fill(int n, int v)
 	{
-		X25519Agreement agreement = new X25519Agreement();
-		agreement.init(self.getPrivate());
-		byte[] secret = new byte[agreement.getAgreementSize()];
-		agreement.calculateAgreement(peer.getPublic(), secret, 0);
-		return secret;
-	}
-
-	private static String mlKem(MLKEMParameters params)
-	{
-		MLKEMKeyPairGenerator gen = new MLKEMKeyPairGenerator();
-		gen.init(new MLKEMKeyGenerationParameters(RANDOM, params));
-		AsymmetricCipherKeyPair pair = gen.generateKeyPair();
-
-		SecretWithEncapsulation enc = new MLKEMGenerator(RANDOM).generateEncapsulated(pair.getPublic());
-		MLKEMExtractor extractor = new MLKEMExtractor((MLKEMPrivateKeyParameters) pair.getPrivate());
-		check(Arrays.equals(enc.getSecret(), extractor.extractSecret(enc.getEncapsulation())),
-				"decapsulated secret differs");
-
-		// ML-KEM uses implicit rejection: a modified ciphertext yields an unrelated secret.
-		byte[] tampered = enc.getEncapsulation().clone();
-		tampered[0] ^= 1;
-		check(!Arrays.equals(enc.getSecret(), extractor.extractSecret(tampered)),
-				"tampered ciphertext gave the original secret");
-
-		return params.getName() + ", ciphertext " + enc.getEncapsulation().length + " bytes";
-	}
-
-	private static String hybrid()
-	{
-		HybridKem kem = HybridKem.DEFAULT;
-		try (HybridKeyPair key = HybridKeyPair.generate(kem, RANDOM))
-		{
-			byte[] context = random(16);
-			Hybrid.Encapsulation enc = Hybrid.encapsulate(key.publicKey(), context, RANDOM);
-			check(Arrays.equals(enc.key(), Hybrid.decapsulate(key, enc.x25519Ephemeral(), enc.mlKemCiphertext(), context)),
-					"decapsulated key differs");
-			try (HybridKeyPair other = HybridKeyPair.generate(kem, RANDOM))
-			{
-				check(!Arrays.equals(enc.key(),
-						Hybrid.decapsulate(other, enc.x25519Ephemeral(), enc.mlKemCiphertext(), context)),
-						"another key pair recovered the key");
-			}
-		}
-		return kem.displayName() + ", HKDF-SHA3-256 combiner";
-	}
-
-	// ---------------------------------------------------------------- signatures
-
-	private static String mlDsa()
-	{
-		MLDSAKeyPairGenerator gen = new MLDSAKeyPairGenerator();
-		gen.init(new MLDSAKeyGenerationParameters(RANDOM, MLDSAParameters.ml_dsa_65));
-		AsymmetricCipherKeyPair pair = gen.generateKeyPair();
-		return signVerify(
-				message -> {
-					MLDSASigner signer = new MLDSASigner();
-					signer.init(true, new ParametersWithRandom(pair.getPrivate(), RANDOM));
-					signer.update(message, 0, message.length);
-					try
-					{
-						return signer.generateSignature();
-					}
-					catch (CryptoException e)
-					{
-						throw new IllegalStateException("signing failed", e);
-					}
-				},
-				(message, signature) -> {
-					MLDSASigner signer = new MLDSASigner();
-					signer.init(false, pair.getPublic());
-					signer.update(message, 0, message.length);
-					return signer.verifySignature(signature);
-				});
-	}
-
-	private static String slhDsa()
-	{
-		SLHDSAKeyPairGenerator gen = new SLHDSAKeyPairGenerator();
-		gen.init(new SLHDSAKeyGenerationParameters(RANDOM, SLHDSAParameters.sha2_128s));
-		AsymmetricCipherKeyPair pair = gen.generateKeyPair();
-		return signVerify(
-				message -> {
-					SLHDSASigner signer = new SLHDSASigner();
-					signer.init(true, new ParametersWithRandom(pair.getPrivate(), RANDOM));
-					return signer.generateSignature(message);
-				},
-				(message, signature) -> {
-					SLHDSASigner signer = new SLHDSASigner();
-					signer.init(false, pair.getPublic());
-					return signer.verifySignature(message, signature);
-				});
-	}
-
-	private static String signVerify(Function<byte[], byte[]> sign, BiPredicate<byte[], byte[]> verify)
-	{
-		byte[] message = random(64);
-		byte[] signature = sign.apply(message);
-
-		check(verify.test(message, signature), "valid signature rejected");
-		message[0] ^= 1;
-		check(!verify.test(message, signature), "signature over modified message accepted");
-		return "signature " + signature.length + " bytes";
-	}
-
-	// ---------------------------------------------------------------- helpers
-
-	private static byte[] random(int length)
-	{
-		byte[] b = new byte[length];
-		RANDOM.nextBytes(b);
+		byte[] b = new byte[n];
+		Arrays.fill(b, (byte) v);
 		return b;
 	}
 
-	private static void check(boolean condition, String message)
+	private static void check(boolean ok, String what)
 	{
-		if (!condition)
-			throw new IllegalStateException(message);
+		if (!ok)
+			throw new IllegalStateException(what + " does not match the known answer");
 	}
 
-	/** Prints the report; exit code 1 if any primitive is missing. */
+	/** Prints the report; exit code 1 if any primitive fails. */
 	public static void main(String[] args)
 	{
 		List<Capability> caps = check();
-		System.out.println("YaCT crypto self-test (BouncyCastle "
-				+ new org.bouncycastle.jce.provider.BouncyCastleProvider().getVersionStr()
-				+ ", Java " + Runtime.version() + ")");
+		System.out.println("YaCT crypto self-test (Java " + Runtime.version() + ")");
 		for (Capability c : caps)
-		{
-			System.out.printf("  [%s] %-20s %-5s %-40s %s%n",
-					c.available() ? " OK " : "FAIL", c.name(), c.postQuantum() ? "PQ" : "", c.purpose(), c.detail());
-		}
+			System.out.printf("  [%s] %-18s %-5s %s%n", c.available() ? " OK " : "FAIL", c.name(), c.postQuantum() ? "PQ" : "",
+					c.detail());
 		System.exit(allAvailable(caps) ? 0 : 1);
 	}
 }

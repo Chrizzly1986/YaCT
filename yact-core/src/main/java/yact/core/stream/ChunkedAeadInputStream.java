@@ -7,7 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Objects;
 
-import org.bouncycastle.crypto.InvalidCipherTextException;
+import javax.crypto.AEADBadTagException;
 
 import yact.core.crypto.CipherSuite;
 import yact.core.crypto.Passwords;
@@ -124,7 +124,7 @@ public final class ChunkedAeadInputStream extends InputStream
 		{
 			plain = suite.open(key, ChunkNonce.of(index, last), aad, sealed, 0, n);
 		}
-		catch (InvalidCipherTextException e)
+		catch (AEADBadTagException e)
 		{
 			plain = new byte[0];
 			failed = true;

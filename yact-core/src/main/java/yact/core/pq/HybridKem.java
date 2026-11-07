@@ -3,8 +3,6 @@
  ******************************************************************************/
 package yact.core.pq;
 
-import org.bouncycastle.crypto.params.MLKEMParameters;
-
 /**
  * The hybrid key encapsulation schemes YaCT supports: ML-KEM (FIPS 203)
  * combined with X25519 (RFC 7748).
@@ -15,9 +13,9 @@ import org.bouncycastle.crypto.params.MLKEMParameters;
 public enum HybridKem
 {
 	/** NIST security category 3. */
-	MLKEM768_X25519(1, "ML-KEM-768 + X25519", MLKEMParameters.ml_kem_768, 1184, 1088),
+	MLKEM768_X25519(1, "ML-KEM-768 + X25519", 1184, 1088),
 	/** NIST security category 5. */
-	MLKEM1024_X25519(2, "ML-KEM-1024 + X25519", MLKEMParameters.ml_kem_1024, 1568, 1568);
+	MLKEM1024_X25519(2, "ML-KEM-1024 + X25519", 1568, 1568);
 
 	/** The strongest scheme; the size and speed difference to ML-KEM-768 is negligible here. */
 	public static final HybridKem DEFAULT = MLKEM1024_X25519;
@@ -27,15 +25,13 @@ public enum HybridKem
 
 	private final int id;
 	private final String displayName;
-	private final MLKEMParameters mlKemParameters;
 	private final int mlKemPublicKeyLength;
 	private final int mlKemCiphertextLength;
 
-	HybridKem(int id, String displayName, MLKEMParameters params, int publicKeyLength, int ciphertextLength)
+	HybridKem(int id, String displayName, int publicKeyLength, int ciphertextLength)
 	{
 		this.id = id;
 		this.displayName = displayName;
-		this.mlKemParameters = params;
 		this.mlKemPublicKeyLength = publicKeyLength;
 		this.mlKemCiphertextLength = ciphertextLength;
 	}
@@ -48,11 +44,6 @@ public enum HybridKem
 	public String displayName()
 	{
 		return displayName;
-	}
-
-	MLKEMParameters mlKemParameters()
-	{
-		return mlKemParameters;
 	}
 
 	public int mlKemPublicKeyLength()

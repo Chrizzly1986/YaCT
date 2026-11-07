@@ -6,10 +6,11 @@ package yact.core.crypto;
 /**
  * Cost parameters for Argon2id.
  *
- * <p>The limits checked here are hard limits: values outside them are
- * rejected when a container is read, so that a manipulated header cannot make
- * YaCT allocate unbounded memory or loop for hours. Whether parameters are
- * <em>strong enough</em> is a separate question, see {@link #isBelowRecommended()}.
+ * <p>The limits checked here are hard limits. Argon2 parameters are read from
+ * a container header before anything in it can be authenticated, so a
+ * manipulated file must not be able to make YaCT allocate unbounded memory or
+ * compute for hours. In addition, {@link Kdf#argon2id} refuses parameters that
+ * need more memory than the Java heap has left, instead of crashing.
  *
  * @param memoryKiB   memory cost in KiB
  * @param iterations  number of passes
@@ -17,14 +18,14 @@ package yact.core.crypto;
  */
 public record Argon2Params(int memoryKiB, int iterations, int parallelism)
 {
-	/** RFC 9106, section 4, second recommended option: 64 MiB, 3 passes, 4 lanes. */
-	public static final Argon2Params DEFAULT = new Argon2Params(64 * 1024, 3, 4);
+	/** 128 MiB, 3 passes, 4 lanes: twice the memory of RFC 9106's second recommended option. */
+	public static final Argon2Params DEFAULT = new Argon2Params(128 * 1024, 3, 4);
 
-	/** Higher cost for users who accept a slower unlock: 256 MiB, 4 passes, 4 lanes. */
-	public static final Argon2Params STRONG = new Argon2Params(256 * 1024, 4, 4);
+	/** 512 MiB, 4 passes, 4 lanes, for users who accept an unlock of a few seconds. */
+	public static final Argon2Params STRONG = new Argon2Params(512 * 1024, 4, 4);
 
-	public static final int MAX_MEMORY_KIB = 4 * 1024 * 1024; // 4 GiB
-	public static final int MAX_ITERATIONS = 64;
+	public static final int MAX_MEMORY_KIB = 1024 * 1024; // 1 GiB
+	public static final int MAX_ITERATIONS = 10;
 	public static final int MAX_PARALLELISM = 16;
 
 	/** OWASP's minimum for Argon2id: 19 MiB, 2 passes. */
@@ -46,5 +47,11 @@ public record Argon2Params(int memoryKiB, int iterations, int parallelism)
 	public boolean isBelowRecommended()
 	{
 		return memoryKiB < RECOMMENDED_MIN_MEMORY_KIB || iterations < RECOMMENDED_MIN_ITERATIONS;
+	}
+
+	/** Bytes of memory the computation needs. */
+	public long memoryBytes()
+	{
+		return memoryKiB * 1024L;
 	}
 }

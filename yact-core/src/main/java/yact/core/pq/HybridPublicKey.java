@@ -4,20 +4,15 @@
 package yact.core.pq;
 
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
+import java.security.InvalidKeyException;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HexFormat;
 
-import org.bouncycastle.crypto.agreement.X25519Agreement;
-import org.bouncycastle.crypto.digests.SHA3Digest;
-import org.bouncycastle.crypto.params.MLKEMPublicKeyParameters;
-import org.bouncycastle.crypto.params.X25519PrivateKeyParameters;
-import org.bouncycastle.crypto.params.X25519PublicKeyParameters;
-
 import yact.core.codec.ByteReader;
 import yact.core.codec.ByteWriter;
 import yact.core.codec.FormatException;
+import yact.core.crypto.JdkCrypto;
 
 /**
  * The public half of a {@link HybridKeyPair}. Anyone who has it can add a
@@ -76,16 +71,6 @@ public final class HybridPublicKey
 	byte[] mlKem()
 	{
 		return mlKem.clone();
-	}
-
-	X25519PublicKeyParameters x25519Parameters()
-	{
-		return new X25519PublicKeyParameters(x25519);
-	}
-
-	MLKEMPublicKeyParameters mlKemParameters()
-	{
-		return new MLKEMPublicKeyParameters(kem.mlKemParameters(), mlKem);
 	}
 
 	// ------------------------------------------------------------------ encoding
@@ -151,11 +136,7 @@ public final class HybridPublicKey
 	 */
 	public String fingerprint()
 	{
-		SHA3Digest d = new SHA3Digest(256);
-		byte[] enc = encode();
-		d.update(enc, 0, enc.length);
-		byte[] hash = new byte[32];
-		d.doFinal(hash, 0);
+		byte[] hash = JdkCrypto.sha3_256().digest(encode());
 		String hex = HexFormat.of().withUpperCase().formatHex(hash, 0, 20);
 		StringBuilder sb = new StringBuilder();
 		for (int i = 0; i < hex.length(); i += 4)
@@ -188,16 +169,19 @@ public final class HybridPublicKey
 	/** A low-order point gives the all-zero shared secret for every private key. */
 	private static boolean isLowOrder(byte[] x25519)
 	{
-		X25519Agreement agreement = new X25519Agreement();
-		agreement.init(new X25519PrivateKeyParameters(new SecureRandom()));
+		byte[] scalar = JdkCrypto.randomBytes(32);
 		try
 		{
-			agreement.calculateAgreement(new X25519PublicKeyParameters(x25519), new byte[32], 0);
+			X25519.agree(scalar, x25519);
 			return false;
 		}
-		catch (IllegalStateException e)
+		catch (InvalidKeyException e)
 		{
 			return true;
+		}
+		finally
+		{
+			java.util.Arrays.fill(scalar, (byte) 0);
 		}
 	}
 

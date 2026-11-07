@@ -32,6 +32,7 @@ import yact.core.codec.FormatException;
 import yact.core.crypto.Argon2Params;
 import yact.core.crypto.CipherSuite;
 import yact.core.crypto.Passwords;
+import yact.core.crypto.SelfTest;
 import yact.core.format.ContainerFormatException;
 import yact.core.format.ContainerHeader;
 import yact.core.format.IntegrityException;
@@ -91,7 +92,7 @@ public final class Container implements Closeable
 
 	private static final byte[] FILE_AAD = "YaCT v1 file".getBytes(StandardCharsets.US_ASCII);
 	private static final byte[] INDEX_AAD = "YaCT v1 index".getBytes(StandardCharsets.US_ASCII);
-	private static final SecureRandom RANDOM = new SecureRandom();
+	private static final SecureRandom RANDOM = yact.core.crypto.JdkCrypto.random();
 
 	/** Opens a key slot; implemented by password and private key. */
 	@FunctionalInterface
@@ -138,6 +139,7 @@ public final class Container implements Closeable
 			ProgressListener progress) throws IOException
 	{
 		checkSize(size);
+		SelfTest.require(); // before the password is processed
 		return create(file, UnlockedHeader.create(suite, ContainerHeader.DEFAULT_CHUNK_EXPONENT, password, params), size,
 				progress);
 	}
@@ -147,6 +149,7 @@ public final class Container implements Closeable
 			ProgressListener progress) throws IOException
 	{
 		checkSize(size);
+		SelfTest.require();
 		return create(file, UnlockedHeader.create(suite, ContainerHeader.DEFAULT_CHUNK_EXPONENT, recipient), size,
 				progress);
 	}
@@ -160,6 +163,7 @@ public final class Container implements Closeable
 	private static Container create(Path file, UnlockedHeader keys, long size, ProgressListener progress)
 			throws IOException
 	{
+		SelfTest.require();
 		FileChannel ch;
 		try
 		{
@@ -215,6 +219,7 @@ public final class Container implements Closeable
 
 	private static Container open(Path file, Unlocker unlocker) throws IOException, InvalidCredentialsException
 	{
+		SelfTest.require();
 		FileChannel ch = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE);
 		try
 		{

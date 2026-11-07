@@ -3,19 +3,11 @@
  ******************************************************************************/
 package yact.core.pq;
 
+import java.security.InvalidKeyException;
 import java.security.SecureRandom;
+import java.util.Arrays;
 
-import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
-import org.bouncycastle.crypto.SecretWithEncapsulation;
-import org.bouncycastle.crypto.agreement.X25519Agreement;
-import org.bouncycastle.crypto.generators.X25519KeyPairGenerator;
-import org.bouncycastle.crypto.kems.MLKEMExtractor;
-import org.bouncycastle.crypto.kems.MLKEMGenerator;
-import org.bouncycastle.crypto.params.X25519KeyGenerationParameters;
-import org.bouncycastle.crypto.params.X25519PrivateKeyParameters;
-import org.bouncycastle.crypto.params.X25519PublicKeyParameters;
-import org.bouncycastle.util.Arrays;
-
+import yact.core.crypto.JdkCrypto;
 import yact.core.crypto.Kdf;
 import yact.core.crypto.Passwords;
 
@@ -35,6 +27,10 @@ import yact.core.crypto.Passwords;
  * the generic combiner that stays secure if either component is broken
  * (Giacon, Heuer, Poettering, "KEM Combiners", PKC 2018; see also NIST SP 800-227).
  * An attacker must break both ML-KEM and X25519 to learn the key.
+ *
+ * <p>X25519 and all key derivation run in the JDK; only ML-KEM comes from a
+ * third-party library ({@link MlKem}). A compromised ML-KEM implementation
+ * alone therefore cannot open a container.
  */
 public final class Hybrid
 {
@@ -53,24 +49,33 @@ public final class Hybrid
 	 * Creates a fresh key for {@code recipient}.
 	 *
 	 * @param context bound into the key, e.g. the container id
+	 * @param random  unused; all randomness comes from {@link JdkCrypto#random()}. Kept for API stability.
 	 */
 	public static Encapsulation encapsulate(HybridPublicKey recipient, byte[] context, SecureRandom random)
 	{
-		SecretWithEncapsulation mlKem = new MLKEMGenerator(random).generateEncapsulated(recipient.mlKemParameters());
+		MlKem.Encapsulated mlKem = MlKem.encapsulate(recipient.kem(), recipient.mlKem());
 
-		X25519KeyPairGenerator gen = new X25519KeyPairGenerator();
-		gen.init(new X25519KeyGenerationParameters(random));
-		AsymmetricCipherKeyPair eph = gen.generateKeyPair();
-		byte[] ephPublic = ((X25519PublicKeyParameters) eph.getPublic()).getEncoded();
-		byte[] ssX = x25519((X25519PrivateKeyParameters) eph.getPrivate(), recipient.x25519Parameters());
-		if (ssX == null)
-			throw new IllegalArgumentException("invalid recipient X25519 key"); // excluded by HybridPublicKey
-
-		byte[] ssM = mlKem.getSecret();
-		byte[] ct = mlKem.getEncapsulation();
+		byte[] ephPrivate = JdkCrypto.randomBytes(X25519.KEY_LENGTH);
+		byte[] ephPublic = X25519.publicKey(ephPrivate);
+		byte[] ssX;
 		try
 		{
-			return new Encapsulation(combine(recipient, ssM, ssX, ct, ephPublic, context), ephPublic, ct);
+			ssX = X25519.agree(ephPrivate, recipient.x25519());
+		}
+		catch (InvalidKeyException e)
+		{
+			throw new IllegalArgumentException("invalid recipient X25519 key", e); // excluded by HybridPublicKey
+		}
+		finally
+		{
+			Passwords.wipe(ephPrivate);
+		}
+
+		byte[] ssM = mlKem.secret();
+		try
+		{
+			return new Encapsulation(combine(recipient, ssM, ssX, mlKem.ciphertext(), ephPublic, context), ephPublic,
+					mlKem.ciphertext());
 		}
 		finally
 		{
@@ -93,10 +98,31 @@ public final class Hybrid
 		if (x25519Ephemeral.length != HybridKem.X25519_KEY_LENGTH || mlKemCiphertext.length != kem.mlKemCiphertextLength())
 			throw new IllegalArgumentException("encapsulation has the wrong length for " + kem);
 
-		byte[] ssX = x25519(key.x25519Private(), new X25519PublicKeyParameters(x25519Ephemeral));
-		if (ssX == null)
+		byte[] scalar = key.x25519Private();
+		byte[] seed = key.mlKemSeed();
+		byte[] ssX;
+		try
+		{
+			ssX = X25519.agree(scalar, x25519Ephemeral);
+		}
+		catch (InvalidKeyException e)
+		{
+			Passwords.wipe(seed);
 			return null;
-		byte[] ssM = new MLKEMExtractor(key.mlKemPrivate()).extractSecret(mlKemCiphertext);
+		}
+		finally
+		{
+			Passwords.wipe(scalar);
+		}
+		byte[] ssM;
+		try
+		{
+			ssM = MlKem.decapsulate(kem, seed, mlKemCiphertext);
+		}
+		finally
+		{
+			Passwords.wipe(seed);
+		}
 		try
 		{
 			return combine(key.publicKey(), ssM, ssX, mlKemCiphertext, x25519Ephemeral, context);
@@ -110,7 +136,8 @@ public final class Hybrid
 	static byte[] combine(HybridPublicKey recipient, byte[] ssM, byte[] ssX, byte[] ct, byte[] ephPublic,
 			byte[] context)
 	{
-		byte[] ikm = Arrays.concatenate(ssM, ssX);
+		byte[] ikm = Arrays.copyOf(ssM, ssM.length + ssX.length);
+		System.arraycopy(ssX, 0, ikm, ssM.length, ssX.length);
 		try
 		{
 			return Kdf.hkdf(ikm, context, LABEL, new byte[] { (byte) recipient.kem().id() }, ct, ephPublic,
@@ -119,23 +146,6 @@ public final class Hybrid
 		finally
 		{
 			Passwords.wipe(ikm);
-		}
-	}
-
-	/** X25519, or {@code null} if the result is all zero (low-order peer key). */
-	private static byte[] x25519(X25519PrivateKeyParameters priv, X25519PublicKeyParameters pub)
-	{
-		X25519Agreement agreement = new X25519Agreement();
-		agreement.init(priv);
-		byte[] out = new byte[agreement.getAgreementSize()];
-		try
-		{
-			agreement.calculateAgreement(pub, out, 0);
-			return out;
-		}
-		catch (IllegalStateException e)
-		{
-			return null;
 		}
 	}
 }

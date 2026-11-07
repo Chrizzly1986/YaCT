@@ -7,9 +7,6 @@ import java.security.SecureRandom;
 
 import javax.security.auth.Destroyable;
 
-import org.bouncycastle.crypto.params.MLKEMPrivateKeyParameters;
-import org.bouncycastle.crypto.params.X25519PrivateKeyParameters;
-
 import yact.core.crypto.Passwords;
 
 /**
@@ -39,12 +36,11 @@ public final class HybridKeyPair implements AutoCloseable, Destroyable
 		this.mlKemSeed = mlKemSeed.clone();
 		this.x25519Private = x25519Private.clone();
 
-		MLKEMPrivateKeyParameters mk = new MLKEMPrivateKeyParameters(kem.mlKemParameters(), this.mlKemSeed);
-		byte[] x25519Public = new X25519PrivateKeyParameters(this.x25519Private).generatePublicKey().getEncoded();
-		this.publicKey = new HybridPublicKey(kem, x25519Public, mk.getPublicKey());
+		this.publicKey = new HybridPublicKey(kem, X25519.publicKey(this.x25519Private),
+				MlKem.publicKey(kem, this.mlKemSeed));
 	}
 
-	/** Generates a new key pair. */
+	/** Generates a new key pair; pass {@link yact.core.crypto.JdkCrypto#random()} outside of tests. */
 	public static HybridKeyPair generate(HybridKem kem, SecureRandom random)
 	{
 		byte[] seed = new byte[HybridKem.MLKEM_SEED_LENGTH];
@@ -72,16 +68,18 @@ public final class HybridKeyPair implements AutoCloseable, Destroyable
 		return publicKey;
 	}
 
-	MLKEMPrivateKeyParameters mlKemPrivate()
+	/** Copy of the ML-KEM seed; the caller wipes it. */
+	byte[] mlKemSeed()
 	{
 		checkAlive();
-		return new MLKEMPrivateKeyParameters(kem.mlKemParameters(), mlKemSeed);
+		return mlKemSeed.clone();
 	}
 
-	X25519PrivateKeyParameters x25519Private()
+	/** Copy of the X25519 scalar; the caller wipes it. */
+	byte[] x25519Private()
 	{
 		checkAlive();
-		return new X25519PrivateKeyParameters(x25519Private);
+		return x25519Private.clone();
 	}
 
 	/** Private key material for the key file: ML-KEM seed ‖ X25519 scalar. Caller wipes. */

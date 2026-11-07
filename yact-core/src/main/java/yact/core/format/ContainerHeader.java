@@ -217,7 +217,7 @@ public final class ContainerHeader
 	boolean verifyMac(byte[] masterKey)
 	{
 		byte[] expected = computeMac(masterKey, containerId, encodeBody(cipherSuite, chunkExponent, containerId, keySlots));
-		return org.bouncycastle.util.Arrays.constantTimeAreEqual(expected, mac);
+		return java.security.MessageDigest.isEqual(expected, mac); // constant time
 	}
 
 	// ------------------------------------------------------------------ writing

@@ -7,7 +7,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.SecureRandom;
+import yact.core.crypto.JdkCrypto;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -297,9 +297,9 @@ public class YactApp extends Application
 			return;
 		}
 		worker.submit(Job.<String>of(Messages.get("job.keyPair"), false, job -> {
-			try (HybridKeyPair key = HybridKeyPair.generate(s.kem(), new SecureRandom()))
+			try (HybridKeyPair key = HybridKeyPair.generate(s.kem(), JdkCrypto.random()))
 			{
-				Files.write(priv.get(), KeyFiles.encryptPrivateKey(key, s.password(), s.params(), new SecureRandom()));
+				Files.write(priv.get(), KeyFiles.encryptPrivateKey(key, s.password(), s.params(), JdkCrypto.random()));
 				Files.writeString(pub.get(), key.publicKey().toArmored(), StandardCharsets.US_ASCII);
 				lastKeyFile = priv.get();
 				return key.publicKey().fingerprint();

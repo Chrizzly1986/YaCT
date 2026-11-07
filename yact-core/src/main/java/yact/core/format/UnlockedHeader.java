@@ -28,7 +28,7 @@ import yact.core.pq.HybridPublicKey;
  */
 public final class UnlockedHeader implements AutoCloseable, Destroyable
 {
-	private static final SecureRandom RANDOM = new SecureRandom();
+	private static final SecureRandom RANDOM = yact.core.crypto.JdkCrypto.random();
 
 	private ContainerHeader header;
 	private final byte[] masterKey;

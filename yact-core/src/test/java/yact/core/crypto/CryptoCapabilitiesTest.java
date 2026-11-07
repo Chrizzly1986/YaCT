@@ -5,88 +5,172 @@ package yact.core.crypto;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.security.Provider;
+import java.security.Security;
 import java.util.List;
+import java.util.Random;
+import java.util.Set;
 import java.util.stream.Collectors;
 
-import org.bouncycastle.crypto.agreement.X25519Agreement;
-import org.bouncycastle.crypto.params.Argon2Parameters;
-import org.bouncycastle.crypto.params.X25519PrivateKeyParameters;
-import org.bouncycastle.crypto.params.X25519PublicKeyParameters;
-import org.bouncycastle.util.encoders.Hex;
+import javax.crypto.CipherSpi;
+
+import org.bouncycastle.crypto.digests.SHA3Digest;
+import org.bouncycastle.crypto.generators.HKDFBytesGenerator;
+import org.bouncycastle.crypto.macs.HMac;
+import org.bouncycastle.crypto.params.HKDFParameters;
+import org.bouncycastle.crypto.params.KeyParameter;
 import org.junit.jupiter.api.Test;
 
 class CryptoCapabilitiesTest
 {
 	@Test
-	void allPrimitivesPassSelfTest()
+	void allPrimitivesPassTheirKnownAnswerTests()
 	{
 		List<CryptoCapabilities.Capability> caps = CryptoCapabilities.check();
-		String failures = caps.stream()
-				.filter(c -> !c.available())
-				.map(c -> c.name() + ": " + c.detail())
+		String failures = caps.stream().filter(c -> !c.available()).map(c -> c.name() + ": " + c.detail())
 				.collect(Collectors.joining("; "));
 		assertTrue(CryptoCapabilities.allAvailable(caps), failures);
+		SelfTest.require();
 	}
 
 	@Test
 	void postQuantumPrimitivesAreReported()
 	{
-		List<String> pq = CryptoCapabilities.check().stream()
-				.filter(CryptoCapabilities.Capability::postQuantum)
-				.map(CryptoCapabilities.Capability::name)
-				.toList();
-		assertEquals(List.of("ML-KEM-768", "ML-KEM-1024", "Hybrid KEM", "ML-DSA-65", "SLH-DSA-SHA2-128s"), pq);
+		List<String> pq = CryptoCapabilities.check().stream().filter(CryptoCapabilities.Capability::postQuantum)
+				.map(CryptoCapabilities.Capability::name).toList();
+		assertEquals(List.of("ML-KEM-768", "ML-KEM-1024", "Hybrid KEM"), pq);
 	}
 
-	// ------------------------------------------------------------ known-answer tests
-
-	/** McGrew/Viega GCM spec, test case 14: AES-256, zero key, zero IV, one zero block. */
+	/** Only ML-KEM may come from a third-party library; everything that sees passwords or master keys is JDK or YaCT. */
 	@Test
-	void aes256GcmKnownAnswer()
+	void onlyMlKemUsesThirdPartyCode()
 	{
-		byte[] out = CipherSuite.AES_256_GCM.seal(new byte[32], new byte[12], new byte[0], new byte[16]);
-		assertArrayEquals(Hex.decode("cea7403d4d606b6e074ec5d3baf39d18" + "d0d1c8a799996bf0265b98b5d48ab919"), out);
+		for (CryptoCapabilities.Capability c : CryptoCapabilities.check())
+			if (c.detail().contains("BouncyCastle"))
+				assertTrue(c.name().startsWith("ML-KEM"), c.name() + " uses BouncyCastle");
 	}
 
-	/** RFC 9106, section 5.3: Argon2id test vector. */
+	// ------------------------------------------------------------ independent implementations
+
 	@Test
-	void argon2idKnownAnswer()
+	void hkdfMatchesIndependentImplementation()
 	{
-		Argon2Parameters params = new Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
-				.withVersion(Argon2Parameters.ARGON2_VERSION_13)
-				.withIterations(3)
-				.withMemoryAsKB(32)
-				.withParallelism(4)
-				.withSalt(fill(16, 0x02))
-				.withSecret(fill(8, 0x03))
-				.withAdditional(fill(12, 0x04))
-				.build();
-		assertArrayEquals(Hex.decode("0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"),
-				CryptoCapabilities.argon2(params, fill(32, 0x01)));
+		Random rnd = new Random(3);
+		for (int i = 0; i < 200; i++)
+		{
+			byte[] ikm = bytes(rnd, 1 + rnd.nextInt(80));
+			byte[] salt = rnd.nextBoolean() ? null : bytes(rnd, 1 + rnd.nextInt(40));
+			byte[] ctx = bytes(rnd, rnd.nextInt(30));
+			String label = "label-" + i;
+
+			byte[] info = new byte[2 + label.length() + 2 + ctx.length];
+			info[0] = 0;
+			info[1] = (byte) label.length();
+			System.arraycopy(label.getBytes(), 0, info, 2, label.length());
+			info[2 + label.length()] = (byte) (ctx.length >>> 8);
+			info[3 + label.length()] = (byte) ctx.length;
+			System.arraycopy(ctx, 0, info, 4 + label.length(), ctx.length);
+
+			HKDFBytesGenerator bc = new HKDFBytesGenerator(new SHA3Digest(256));
+			bc.init(new HKDFParameters(ikm, salt, info));
+			byte[] expected = new byte[32];
+			bc.generateBytes(expected, 0, 32);
+			assertArrayEquals(expected, Kdf.hkdf(ikm, salt, label, ctx));
+		}
 	}
 
-	/** RFC 7748, section 6.1: X25519 Diffie-Hellman. */
 	@Test
-	void x25519KnownAnswer()
+	void hmacMatchesIndependentImplementation()
 	{
-		X25519PrivateKeyParameters alice = new X25519PrivateKeyParameters(
-				Hex.decode("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a"));
-		X25519PublicKeyParameters bob = new X25519PublicKeyParameters(
-				Hex.decode("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"));
-
-		X25519Agreement agreement = new X25519Agreement();
-		agreement.init(alice);
-		byte[] shared = new byte[32];
-		agreement.calculateAgreement(bob, shared, 0);
-		assertArrayEquals(Hex.decode("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"), shared);
+		Random rnd = new Random(4);
+		for (int i = 0; i < 100; i++)
+		{
+			byte[] key = bytes(rnd, 1 + rnd.nextInt(200));
+			byte[] data = bytes(rnd, rnd.nextInt(500));
+			HMac bc = new HMac(new SHA3Digest(256));
+			bc.init(new KeyParameter(key));
+			bc.update(data, 0, data.length);
+			byte[] expected = new byte[32];
+			bc.doFinal(expected, 0);
+			assertArrayEquals(expected, Kdf.hmac(key, data, 0, data.length));
+		}
 	}
 
-	private static byte[] fill(int length, int value)
+	// ------------------------------------------------------------ provider injection
+
+	/** A provider merely named like the JDK's is not accepted as the JDK's. */
+	@Test
+	void fakeProvidersAreNotGenuine()
 	{
-		byte[] b = new byte[length];
-		java.util.Arrays.fill(b, (byte) value);
+		Provider fake = new Provider("SunJCE", "21", "imitation") { };
+		assertFalse(JdkCrypto.isGenuine(fake, "com.sun.crypto.provider.SunJCE", Set.of("java.base")));
+		assertTrue(JdkCrypto.isGenuine(Security.getProvider("SunJCE"), "com.sun.crypto.provider.SunJCE", Set.of("java.base")));
+	}
+
+	/**
+	 * Code that registers its own AES-GCM in front of the JDK's (as a compromised
+	 * dependency could) must not receive YaCT's keys.
+	 */
+	@Test
+	void injectedProviderIsIgnored() throws Exception
+	{
+		Provider evil = new Provider("Evil", "1", "steals keys")
+		{
+			{
+				put("Cipher.AES/GCM/NoPadding", StealingCipher.class.getName());
+				put("Cipher.ChaCha20-Poly1305", StealingCipher.class.getName());
+				put("Mac.HmacSHA3-256", StealingCipher.class.getName());
+			}
+		};
+		Security.insertProviderAt(evil, 1);
+		try
+		{
+			assertEquals("Evil", javax.crypto.Cipher.getInstance("AES/GCM/NoPadding").getProvider().getName(),
+					"the name lookup is hijacked");
+			StealingCipher.used = false; // from here on, only YaCT's own calls count
+			assertEquals("SunJCE (JDK)", CipherSuite.AES_256_GCM.implementation());
+			assertEquals("SunJCE (JDK)", CipherSuite.CHACHA20_POLY1305.implementation());
+			assertEquals("SunJCE", JdkCrypto.hmacSha3_256().getProvider().getName());
+			assertTrue(CryptoCapabilities.allAvailable(CryptoCapabilities.check()));
+			assertFalse(StealingCipher.used, "the injected cipher was used");
+		}
+		finally
+		{
+			Security.removeProvider("Evil");
+		}
+	}
+
+	public static final class StealingCipher extends CipherSpi
+	{
+		static volatile boolean used;
+
+		public StealingCipher()
+		{
+			used = true;
+		}
+
+		@Override protected void engineSetMode(String mode) { }
+		@Override protected void engineSetPadding(String padding) { }
+		@Override protected int engineGetBlockSize() { return 16; }
+		@Override protected int engineGetOutputSize(int inputLen) { return inputLen; }
+		@Override protected byte[] engineGetIV() { return null; }
+		@Override protected java.security.AlgorithmParameters engineGetParameters() { return null; }
+		@Override protected void engineInit(int opmode, java.security.Key key, java.security.SecureRandom random) { }
+		@Override protected void engineInit(int opmode, java.security.Key key, java.security.spec.AlgorithmParameterSpec params, java.security.SecureRandom random) { }
+		@Override protected void engineInit(int opmode, java.security.Key key, java.security.AlgorithmParameters params, java.security.SecureRandom random) { }
+		@Override protected byte[] engineUpdate(byte[] input, int inputOffset, int inputLen) { return new byte[0]; }
+		@Override protected int engineUpdate(byte[] input, int inputOffset, int inputLen, byte[] output, int outputOffset) { return 0; }
+		@Override protected byte[] engineDoFinal(byte[] input, int inputOffset, int inputLen) { return new byte[0]; }
+		@Override protected int engineDoFinal(byte[] input, int inputOffset, int inputLen, byte[] output, int outputOffset) { return 0; }
+	}
+
+	private static byte[] bytes(Random rnd, int n)
+	{
+		byte[] b = new byte[n];
+		rnd.nextBytes(b);
 		return b;
 	}
 }

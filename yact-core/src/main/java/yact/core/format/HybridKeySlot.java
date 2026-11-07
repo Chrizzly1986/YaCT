@@ -6,7 +6,7 @@ package yact.core.format;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 
-import org.bouncycastle.crypto.InvalidCipherTextException;
+import javax.crypto.AEADBadTagException;
 
 import yact.core.codec.ByteReader;
 import yact.core.codec.ByteWriter;
@@ -87,7 +87,7 @@ public final class HybridKeySlot implements KeySlot
 		{
 			return suite.open(kek, nonce, aad(containerId, kem, x25519Ephemeral, mlKemCiphertext), wrappedKey);
 		}
-		catch (InvalidCipherTextException e)
+		catch (AEADBadTagException e)
 		{
 			return null;
 		}

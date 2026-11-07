@@ -8,7 +8,7 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.bouncycastle.crypto.InvalidCipherTextException;
+import javax.crypto.AEADBadTagException;
 
 import yact.core.codec.ByteReader;
 import yact.core.codec.ByteWriter;
@@ -101,7 +101,7 @@ record Superblock(long generation, byte[] indexSalt, List<Extent> indexExtents)
 				extents.add(new Extent(r.u63(), r.u63()));
 			return new Superblock(generation, indexSalt, extents);
 		}
-		catch (InvalidCipherTextException | FormatException | IllegalArgumentException e)
+		catch (AEADBadTagException | FormatException | IllegalArgumentException e)
 		{
 			return null;
 		}

@@ -7,7 +7,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.security.GeneralSecurityException;
-import java.security.SecureRandom;
 import java.util.List;
 
 import javax.crypto.Cipher;
@@ -20,7 +19,7 @@ import javax.crypto.spec.SecretKeySpec;
  *
  * <p>The data is an AES-256-CTR keystream under a fresh random key: a
  * cryptographically secure generator that runs at disk speed thanks to the
- * processor's AES instructions, unlike {@link SecureRandom}.
+ * processor's AES instructions, unlike {@code SecureRandom}.
  */
 final class RandomFill
 {
@@ -66,14 +65,11 @@ final class RandomFill
 
 	private static Cipher newKeystream()
 	{
-		SecureRandom random = new SecureRandom();
-		byte[] key = new byte[32];
-		byte[] iv = new byte[16];
-		random.nextBytes(key);
-		random.nextBytes(iv);
+		byte[] key = yact.core.crypto.JdkCrypto.randomBytes(32);
+		byte[] iv = yact.core.crypto.JdkCrypto.randomBytes(16);
 		try
 		{
-			Cipher c = Cipher.getInstance("AES/CTR/NoPadding");
+			Cipher c = yact.core.crypto.JdkCrypto.cipher("AES/CTR/NoPadding");
 			c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
 			return c;
 		}
