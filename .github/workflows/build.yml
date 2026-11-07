@@ -1,0 +1,63 @@
+# Tests YaCT and builds a self-contained application on Linux, Windows and macOS.
+# The packages are attached to each run as artifacts (unsigned; see README).
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Test
+        run: mvn -B verify
+
+      - name: Package (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: packaging/package.sh
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: powershell -ExecutionPolicy Bypass -File packaging/package.ps1
+
+      # Runs the packaged application without a display: checks every crypto
+      # primitive and the locale data inside the bundled Java runtime.
+      - name: Self-test (Linux)
+        if: runner.os == 'Linux'
+        run: target/dist/YaCT/bin/YaCT --self-test
+
+      - name: Self-test (macOS)
+        if: runner.os == 'macOS'
+        run: target/dist/YaCT.app/Contents/MacOS/YaCT --self-test
+
+      - name: Self-test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The launcher is a GUI program without a console; wait for it and check the exit code.
+          $p = Start-Process -FilePath target\dist\YaCT\YaCT.exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YaCT-${{ runner.os }}
+          path: target/dist/
+          if-no-files-found: error
