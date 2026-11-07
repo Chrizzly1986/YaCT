@@ -10,35 +10,67 @@ All integers are unsigned and big-endian. Sizes are in bytes.
 ```
 offset 0         header copy A, 65 536 bytes
 offset 65 536    header copy B, 65 536 bytes
-offset 131 072   superblock slot 0, 128 bytes
-offset 131 200   superblock slot 1, 128 bytes
-offset 131 328   data area: encrypted file contents and index versions
+offset 131 072   superblock slot 0, 4 096 bytes
+offset 135 168   superblock slot 1, 4 096 bytes
+offset 139 264   data area, up to the end of the file
 ```
 
 The header area has a fixed size, so adding or removing key slots never moves
 the encrypted data. Bytes after the header's MAC are zero.
 
+### Size and free space
+
+- A container has a fixed size, chosen at creation (at least 1 MiB) and only
+  changed when the user enlarges it. The file size is the container size.
+- On creation and when enlarging, the new data area is filled with random data
+  (AES-256-CTR keystream under a random, discarded key). Free space therefore
+  cannot be told apart from ciphertext, and the file does not reveal how much
+  is stored.
+- Free space is everything in the data area that the current index does not
+  reference. Encrypted contents are written into free space and may be split
+  into several extents (fragments).
+- Space for the next index is always kept free (the current index size plus
+  64 KiB, encrypted), so a full container can still delete files.
+
 ### Crash safety
 
-- **Data area:** file contents and index versions are only ever appended.
-  A commit appends the new index, forces the file to disk, then writes the
-  superblock slot not holding the current state, and forces again.
+- New contents and the new index are written only to space the committed state
+  does not use. A commit forces them to disk, then writes the superblock slot
+  that does not hold the current state, and forces again.
 - **Superblocks:** the valid slot with the higher generation is current. If
-  that write is torn, the other slot still describes the previous state.
+  that write is torn, the other slot still describes the previous state, whose
+  data is untouched at that point.
+- Space freed by a commit (deleted and replaced files, the previous index)
+  becomes free only after the new superblock is on disk. Only then may it be
+  wiped or reused.
 - **Header copies:** key slot changes write copy B, force, then copy A, force.
   A reader tries A, then B if it differs. After opening, both copies are set
   to the one that opened. So a crash never leaves the container unopenable,
   and a removed key slot does not survive in the second copy.
-- Bytes appended by an operation that never committed are unused space.
+- Enlarging fills the new space before using it; a crash leaves a valid
+  container, possibly with part of the new space.
+
+### Deleting
+
+By default (*wipe on delete*), the space a commit frees is overwritten with
+random data right after that commit. This covers deleted files, the old
+content of replaced files and the previous index, which holds the names of
+deleted files. Afterwards the data cannot be recovered even with the key.
+
+A crash between commit and wiping leaves that space unwiped but free. A
+"wipe free space" operation overwrites all free space and can repair this.
+Wiping can be switched off per session, for speed.
 
 ## Superblock
 
 | Size | Field |
 |---|---|
 | 16 | salt, fresh for every write |
-| 56 | AEAD (container cipher, all-zero nonce) of the next four fields + tag |
-| | 8 generation · 16 index stream salt · 8 index offset · 8 index length |
-| 56 | zero |
+| 4 050 | AEAD (container cipher, all-zero nonce) of a 4 034-byte record + 16-byte tag |
+| 30 | zero |
+
+Record: 8 generation · 16 index stream salt · 2 number of index extents
+(1..250) · 250 × (8 offset, 8 length), unused entries zero.
 
 Key = stream key for the salt; associated data = `"YaCT v1 superblock"`. The
 salt is new for every write, so the fixed nonce is never reused under one key.
@@ -47,7 +79,8 @@ Generation *g* is written to slot *g* mod 2.
 ## Index
 
 The table of contents, stored as one encrypted stream with associated data
-`"YaCT v1 index"`. Each commit writes a complete new index.
+`"YaCT v1 index"`, in the extents named by the superblock. Each commit writes a
+complete new index, preferring the largest free gaps.
 
 | Size | Field |
 |---|---|
@@ -57,8 +90,11 @@ The table of contents, stored as one encrypted stream with associated data
 | 8 | plaintext size |
 | 8 | last modified, milliseconds since 1970-01-01T00:00Z |
 | 16 | stream salt of the content |
-| 8 | offset of the encrypted content in the file |
-| 8 | length of the encrypted content |
+| 4 | number of extents (1..1 000 000) |
+| 16 × n | extents: 8 offset, 8 length |
+
+A file's encrypted content is the concatenation of its extents. When opening,
+every extent must lie within the data area, and no two may overlap.
 
 Paths are relative, use `/`, are in Unicode NFC and contain no empty, `.` or
 `..` segments, backslashes or control characters (at most 4096 UTF-8 bytes).
@@ -66,14 +102,6 @@ This rules out writing outside the target directory on extraction. A file and
 a directory may not share a name.
 
 File contents are encrypted streams with associated data `"YaCT v1 file"`.
-
-## Deleting and compaction
-
-Deleting or replacing a file only removes it from the index; its encrypted
-content stays in the file until compaction. Compaction writes a new container
-next to the old one, copying the header, the live encrypted contents (without
-decrypting them) and a new index, and atomically replaces the old file.
-Its generation continues from the old one.
 
 ## Key hierarchy
 
@@ -243,10 +271,13 @@ only once its final chunk has been verified.
   with an older copy of itself.
 - **Removed key slots in old copies:** removing a slot does not help against
   someone who copied the container while the slot existed.
-- **Deleted files before compaction:** whoever has the container file and a
-  key can recover them. Compaction cannot erase copies that the file system,
-  backups or an SSD kept elsewhere.
-- **Metadata:** the file size reveals roughly how much data is stored, and the
-  header shows how many password and public-key slots exist.
+- **Copies outside the container:** wiping cannot reach old versions kept by
+  the file system (copy-on-write, snapshots), backups, sync services or an
+  SSD's wear levelling. They remain encrypted, so they matter only to someone
+  who has a key.
+- **Revoking access:** removing a key slot does not lock out someone who has
+  already opened the container; they may have kept the master key.
+- **Metadata:** the header shows how many password and public-key slots exist.
+  The file size only reveals the chosen container size.
 - **Fake public keys:** YaCT cannot tell whether a public key really belongs to
   the person it claims to; users must compare fingerprints.

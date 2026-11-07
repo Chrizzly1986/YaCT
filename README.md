@@ -63,7 +63,7 @@ YaCT implements no cryptographic algorithms itself. The file format is specified
 | 1 | Maven build, crypto self-test | done |
 | 2 | Container header, password key slots, chunked data encryption | done |
 | 3 | Hybrid post-quantum key slot (ML-KEM + X25519), key files | done |
-| 4 | Container operations: create, open, add/extract/delete files | done |
+| 4 | Container operations: fixed-size container (growable), add/extract/delete files, wipe on delete | done |
 | 5 | Connect the JavaFX UI | open |
 | 6 | Remove legacy code, documentation | open |
 

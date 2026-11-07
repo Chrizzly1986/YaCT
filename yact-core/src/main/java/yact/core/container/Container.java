@@ -22,8 +22,8 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileTime;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.TreeMap;
@@ -43,37 +43,51 @@ import yact.core.stream.ChunkedAeadInputStream;
 import yact.core.stream.ChunkedAeadOutputStream;
 
 /**
- * An open YaCT container: an encrypted file vault.
+ * An open YaCT container: an encrypted file vault of fixed size.
  *
  * <p>File layout:
  * <pre>
  * 0          header copy A (64 KiB)
  * 65536      header copy B (64 KiB)
- * 131072     superblock slot 0 (128 bytes)
- * 131200     superblock slot 1 (128 bytes)
- * 131328     data: encrypted file contents and index versions, append-only
+ * 131072     superblock slot 0 (4 KiB)
+ * 135168     superblock slot 1 (4 KiB)
+ * 139264     data area up to the end of the file
  * </pre>
  *
- * <p><b>Crash safety.</b> File contents and the index are only ever appended.
- * {@link #commit()} first forces them to disk, then writes the other
- * superblock slot. Until that slot is written, the previous state is current;
- * a crash at any point leaves either the old or the new state. Header changes
- * (key slots) write copy B, then copy A; opening repairs a copy that differs.
+ * <p><b>Size.</b> A container has the size chosen at creation; {@link #grow}
+ * enlarges it. Free space is filled with random data that looks like
+ * ciphertext, so the file does not reveal how much is stored. File contents
+ * go into free space and may be fragmented. A small reserve is always kept
+ * for the index, so that deleting stays possible in a full container.
  *
- * <p><b>Deleting.</b> Deleted and replaced files keep their space until
- * {@link #compact()} rewrites the container. Until then, someone with the
- * container file <em>and</em> its key can recover deleted files. Compaction
- * cannot erase copies the file system or an SSD kept elsewhere.
+ * <p><b>Crash safety.</b> New contents and the new index are only written to
+ * space the committed state does not use. {@link #commit()} forces them to
+ * disk, then writes the other superblock slot; until then the previous state
+ * is current. Header changes (key slots) write copy B, then copy A; opening
+ * repairs a copy that differs.
+ *
+ * <p><b>Deleting.</b> With {@link #setWipeOnDelete(boolean) wipe on delete}
+ * (the default), space that a commit frees — deleted and replaced files and
+ * old index versions — is overwritten with random data right after that
+ * commit, so it cannot be recovered even with the key. Copies kept elsewhere
+ * by the file system, snapshots, backups, sync services or an SSD's wear
+ * levelling are out of reach of any program.
  *
  * <p>Changes are buffered in memory until {@link #commit()} or
  * {@link #close()}. Instances are not thread-safe; the file is locked against
- * other processes while open.
+ * other opens while in use.
  */
 public final class Container implements Closeable
 {
 	static final long HEADER_B_OFFSET = ContainerHeader.AREA_SIZE;
 	static final long SUPERBLOCK_OFFSET = 2L * ContainerHeader.AREA_SIZE;
 	static final long DATA_OFFSET = SUPERBLOCK_OFFSET + 2L * Superblock.SIZE;
+
+	/** Smallest container that can be created. */
+	public static final long MIN_SIZE = 1L << 20;
+
+	/** Kept free beyond the current index size, for index growth through renames and new extents. */
+	private static final long INDEX_MARGIN = 64 * 1024;
 
 	private static final byte[] FILE_AAD = "YaCT v1 file".getBytes(StandardCharsets.US_ASCII);
 	private static final byte[] INDEX_AAD = "YaCT v1 index".getBytes(StandardCharsets.US_ASCII);
@@ -86,12 +100,21 @@ public final class Container implements Closeable
 		UnlockedHeader unlock(ContainerHeader header) throws InvalidCredentialsException, IntegrityException;
 	}
 
-	private Path file;
-	private FileChannel channel;
-	private FileLock lock;
+	private final Path file;
+	private final FileChannel channel;
+	private final FileLock lock;
 	private final UnlockedHeader keys;
+	private long size;
 	private TreeMap<String, Index.Item> items;
+	/** Bytes the encoded index currently needs. */
+	private long indexBytes;
+	/**
+	 * Space that must not be overwritten: everything the committed state
+	 * references, plus contents written since the last commit.
+	 */
+	private ExtentSet allocated;
 	private Superblock current;
+	private boolean wipeOnDelete = true;
 	private boolean dirty;
 	private boolean closed;
 
@@ -105,32 +128,60 @@ public final class Container implements Closeable
 
 	// ================================================================== create / open
 
-	/** Creates a new, empty container protected by a password. Fails if {@code file} exists. */
-	public static Container create(Path file, CipherSuite suite, char[] password, Argon2Params params)
-			throws IOException
+	/**
+	 * Creates a new, empty container protected by a password. Fails if {@code file} exists.
+	 *
+	 * @param size     total file size in bytes, at least {@link #MIN_SIZE}
+	 * @param progress reports filling the container with random data, which takes most of the time
+	 */
+	public static Container create(Path file, CipherSuite suite, char[] password, Argon2Params params, long size,
+			ProgressListener progress) throws IOException
 	{
-		return create(file, UnlockedHeader.create(suite, ContainerHeader.DEFAULT_CHUNK_EXPONENT, password, params));
+		checkSize(size);
+		return create(file, UnlockedHeader.create(suite, ContainerHeader.DEFAULT_CHUNK_EXPONENT, password, params), size,
+				progress);
 	}
 
 	/** Creates a new, empty container that only the owner of {@code recipient}'s private key can open. */
-	public static Container create(Path file, CipherSuite suite, HybridPublicKey recipient) throws IOException
+	public static Container create(Path file, CipherSuite suite, HybridPublicKey recipient, long size,
+			ProgressListener progress) throws IOException
 	{
-		return create(file, UnlockedHeader.create(suite, ContainerHeader.DEFAULT_CHUNK_EXPONENT, recipient));
+		checkSize(size);
+		return create(file, UnlockedHeader.create(suite, ContainerHeader.DEFAULT_CHUNK_EXPONENT, recipient), size,
+				progress);
 	}
 
-	private static Container create(Path file, UnlockedHeader keys) throws IOException
+	private static void checkSize(long size)
 	{
-		FileChannel ch = FileChannel.open(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ,
-				StandardOpenOption.WRITE);
-		Container c = null;
+		if (size < MIN_SIZE)
+			throw new IllegalArgumentException("a container must be at least " + MIN_SIZE + " bytes");
+	}
+
+	private static Container create(Path file, UnlockedHeader keys, long size, ProgressListener progress)
+			throws IOException
+	{
+		FileChannel ch;
+		try
+		{
+			ch = FileChannel.open(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ, StandardOpenOption.WRITE);
+		}
+		catch (IOException e)
+		{
+			keys.close();
+			throw e;
+		}
 		try
 		{
 			FileLock lock = lockOrFail(ch);
-			c = new Container(file, ch, lock, keys);
+			Container c = new Container(file, ch, lock, keys);
 			c.writeHeaderCopies();
-			c.items = new TreeMap<>();
-			c.current = new Superblock(0, new byte[Superblock.SALT_LENGTH], 0, 0);
 			ch.write(ByteBuffer.allocate(2 * Superblock.SIZE), SUPERBLOCK_OFFSET);
+			RandomFill.fill(ch, List.of(new Extent(DATA_OFFSET, size - DATA_OFFSET)), progress);
+			c.size = size;
+			c.items = new TreeMap<>();
+			c.indexBytes = 4;
+			c.allocated = new ExtentSet();
+			c.current = new Superblock(0, new byte[Superblock.SALT_LENGTH], List.of());
 			c.dirty = true;
 			c.commit();
 			return c;
@@ -168,7 +219,7 @@ public final class Container implements Closeable
 		try
 		{
 			FileLock lock = lockOrFail(ch);
-			if (ch.size() < DATA_OFFSET)
+			if (ch.size() < ContainerHeader.AREA_SIZE)
 				throw new ContainerFormatException("file too short for a YaCT container");
 
 			byte[] areaA = ChannelIO.readFully(ch, 0, ContainerHeader.AREA_SIZE);
@@ -178,6 +229,9 @@ public final class Container implements Closeable
 			Container c = new Container(file, ch, lock, keys);
 			try
 			{
+				c.size = ch.size();
+				if (c.size < DATA_OFFSET)
+					throw new IntegrityException("container file is truncated");
 				c.repairHeaderCopies(areaA, areaB);
 				c.loadIndex();
 				return c;
@@ -289,7 +343,7 @@ public final class Container implements Closeable
 		Index.Item it = items.get(VaultPaths.normalize(path));
 		if (it == null)
 			throw new NoSuchFileException(path);
-		return verifiedSize(openStream(it.salt(), it.offset(), it.sealedLength(), FILE_AAD), it.entry().size());
+		return verifiedSize(openStream(it.salt(), it.extents(), FILE_AAD), it.entry().size());
 	}
 
 	/**
@@ -355,29 +409,55 @@ public final class Container implements Closeable
 	 *
 	 * @param overwrite replace an existing file at the same path
 	 * @throws FileAlreadyExistsException if the path exists and {@code overwrite} is false
+	 * @throws ContainerFullException     if the content does not fit; the container is unchanged
 	 * @throws IllegalArgumentException   if the path is invalid, or a file and a directory would share a name
 	 */
 	public void add(String path, InputStream content, Instant modified, boolean overwrite) throws IOException
+	{
+		add(path, content, modified, overwrite, -1);
+	}
+
+	private void add(String path, InputStream content, Instant modified, boolean overwrite, long sizeHint)
+			throws IOException
 	{
 		checkOpen();
 		String p = VaultPaths.normalize(path);
 		if (items.containsKey(p) && !overwrite)
 			throw new FileAlreadyExistsException(p);
 		checkNoFileDirectoryClash(p);
+		if (sizeHint >= 0 && sealedSize(sizeHint) > freeBytes())
+			throw new ContainerFullException("not enough space for " + p, freeBytes());
 
 		byte[] salt = new byte[Superblock.SALT_LENGTH];
 		RANDOM.nextBytes(salt);
-		long offset = channel.size();
-		long[] plainSize = new long[1];
-		long sealedLength = writeStream(salt, offset, FILE_AAD, out -> plainSize[0] = content.transferTo(out));
-
-		items.put(p, new Index.Item(new ContainerEntry(p, plainSize[0], modified), salt, offset, sealedLength));
-		dirty = true;
+		int entryBase = 2 + p.getBytes(StandardCharsets.UTF_8).length + 8 + 8 + 16 + 4;
+		ExtentWriter raw = new ExtentWriter(entryBase, sizeHint < 0 ? -1 : sealedSize(sizeHint));
+		long plainSize;
+		byte[] key = keys.streamKey(salt);
+		try
+		{
+			ChunkedAeadOutputStream enc = new ChunkedAeadOutputStream(raw, keys.header().cipherSuite(), key, FILE_AAD,
+					keys.header().chunkSize());
+			plainSize = content.transferTo(enc);
+			enc.finish();
+		}
+		catch (IOException | RuntimeException e)
+		{
+			raw.abort();
+			throw e;
+		}
+		finally
+		{
+			Passwords.wipe(key);
+		}
+		putItem(new Index.Item(new ContainerEntry(p, plainSize, modified), salt, raw.finish()));
 	}
 
 	/**
 	 * Imports a file, or a directory tree, from disk into {@code targetDirectory}
 	 * ("" for the root). Symbolic links are skipped and never followed.
+	 *
+	 * @throws ContainerFullException if a file does not fit; files imported before it stay added
 	 */
 	public void importPath(Path source, String targetDirectory, boolean overwrite) throws IOException
 	{
@@ -404,30 +484,29 @@ public final class Container implements Closeable
 			Instant modified = Files.getLastModifiedTime(source, LinkOption.NOFOLLOW_LINKS).toInstant();
 			try (InputStream in = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS))
 			{
-				add(target, in, modified, overwrite);
+				add(target, in, modified, overwrite, Files.size(source));
 			}
 		}
 	}
 
-	/** Deletes one file. The space is reclaimed by {@link #compact()}. */
+	/** Deletes one file. Its space is freed, and wiped if enabled, by the next {@link #commit()}. */
 	public void delete(String path) throws IOException
 	{
 		checkOpen();
 		String p = VaultPaths.normalize(path);
-		if (items.remove(p) == null)
+		if (!items.containsKey(p))
 			throw new NoSuchFileException(path);
-		dirty = true;
+		removeItem(p);
 	}
 
-	/** Deletes all files below {@code directory}; returns how many. */
+	/** Deletes all files below {@code directory}; returns how many. Space is freed as for {@link #delete}. */
 	public int deleteDirectory(String directory)
 	{
 		checkOpen();
 		String dir = VaultPaths.normalize(directory);
-		int before = items.size();
-		items.keySet().removeIf(p -> VaultPaths.isWithin(p, dir));
-		dirty |= items.size() != before;
-		return before - items.size();
+		List<String> doomed = items.keySet().stream().filter(p -> VaultPaths.isWithin(p, dir)).toList();
+		doomed.forEach(this::removeItem);
+		return doomed.size();
 	}
 
 	/** Renames or moves a file. Only the index changes; the content is not rewritten. */
@@ -443,19 +522,36 @@ public final class Container implements Closeable
 			return;
 		if (items.containsKey(t))
 			throw new FileAlreadyExistsException(t);
-		items.remove(f);
+		removeItem(f);
 		try
 		{
 			checkNoFileDirectoryClash(t);
 		}
 		catch (IllegalArgumentException e)
 		{
-			items.put(f, it);
+			putItem(it);
 			throw e;
 		}
-		ContainerEntry e = it.entry();
-		items.put(t, new Index.Item(new ContainerEntry(t, e.size(), e.modified()), it.salt(), it.offset(), it.sealedLength()));
+		putItem(it.withPath(t));
+	}
+
+	private void putItem(Index.Item it)
+	{
+		Index.Item old = items.put(it.entry().path(), it);
+		if (old != null)
+			indexBytes -= old.encodedSize();
+		indexBytes += it.encodedSize();
 		dirty = true;
+	}
+
+	private void removeItem(String path)
+	{
+		Index.Item old = items.remove(path);
+		if (old != null)
+		{
+			indexBytes -= old.encodedSize();
+			dirty = true;
+		}
 	}
 
 	/** A file "a" and a file "a/b" cannot coexist: "a" would have to be both a file and a directory. */
@@ -476,97 +572,311 @@ public final class Container implements Closeable
 	}
 
 	/**
-	 * Persists all changes: writes a new index, forces data to disk, then
-	 * switches the superblock. Does nothing if nothing changed.
+	 * Persists all changes: writes a new index into free space, forces data to
+	 * disk, then switches the superblock. Afterwards, space no longer in use is
+	 * freed and, with wipe on delete, overwritten. Does nothing if nothing changed.
+	 *
+	 * @throws ContainerFullException only if the reserve was exhausted, e.g. by very long paths;
+	 *                                nothing is lost, the container can be enlarged and the commit repeated
 	 */
 	public void commit() throws IOException
 	{
 		checkOpen();
 		if (!dirty)
 			return;
-		byte[] indexSalt = new byte[Superblock.SALT_LENGTH];
-		RANDOM.nextBytes(indexSalt);
 		byte[] index = Index.encode(items);
-		long offset = Math.max(channel.size(), DATA_OFFSET);
-		long length = writeStream(indexSalt, offset, INDEX_AAD, out -> out.write(index));
-		channel.force(true);
+		byte[] indexSalt = randomBytes(Superblock.SALT_LENGTH);
+		List<Extent> target = claimForIndex(sealedSize(index.length));
+		try
+		{
+			writeFixed(target, indexSalt, INDEX_AAD, index);
+			channel.force(true);
+		}
+		catch (IOException | RuntimeException e)
+		{
+			target.forEach(allocated::remove);
+			throw e;
+		}
 
-		Superblock next = new Superblock(current.generation() + 1, indexSalt, offset, length);
+		Superblock next = new Superblock(current.generation() + 1, indexSalt, target);
 		ChannelIO.writeFully(channel, next.encode(keys, RANDOM), SUPERBLOCK_OFFSET + (long) next.slot() * Superblock.SIZE);
 		channel.force(true);
 		current = next;
 		dirty = false;
+
+		ExtentSet live = liveExtents();
+		ExtentSet freed = allocated.minus(live);
+		allocated = live;
+		if (wipeOnDelete && freed.total() > 0)
+		{
+			RandomFill.fill(channel, freed.extents(), ProgressListener.NONE);
+			channel.force(true);
+		}
 	}
 
-	// ================================================================== maintenance
+	/** Everything the current state references: file contents and the current index. */
+	private ExtentSet liveExtents()
+	{
+		ExtentSet live = ExtentSet.of(current.indexExtents());
+		for (Index.Item it : items.values())
+			for (Extent e : it.extents())
+				live.add(e);
+		return live;
+	}
 
-	/** Bytes held by deleted or replaced files and old index versions; reclaimed by {@link #compact()}. */
-	public long unusedBytes() throws IOException
+	/** Largest gaps first, to keep the index in few extents. */
+	private List<Extent> claimForIndex(long need) throws ContainerFullException
+	{
+		List<Extent> gaps = new ArrayList<>(allocated.gaps(DATA_OFFSET, size));
+		gaps.sort((a, b) -> Long.compare(b.length(), a.length()));
+		List<Extent> chosen = new ArrayList<>();
+		long remaining = need;
+		for (Extent g : gaps)
+		{
+			if (remaining == 0 || chosen.size() == Superblock.MAX_INDEX_EXTENTS)
+				break;
+			long n = Math.min(g.length(), remaining);
+			chosen.add(new Extent(g.offset(), n));
+			remaining -= n;
+		}
+		if (remaining > 0)
+			throw new ContainerFullException("no space left for the index; enlarge the container", freeBytes());
+		chosen.forEach(allocated::add);
+		return chosen;
+	}
+
+	// ================================================================== size and space
+
+	/** Total size of the container file in bytes. */
+	public long size()
 	{
 		checkOpen();
-		long live = current.indexLength();
-		for (Index.Item it : items.values())
-			live += it.sealedLength();
-		return channel.size() - DATA_OFFSET - live;
+		return size;
+	}
+
+	/** Bytes available for new encrypted content, after the index reserve. */
+	public long freeBytes()
+	{
+		checkOpen();
+		return Math.max(0, gapTotal() - reserve(0));
 	}
 
 	/**
-	 * Rewrites the container without unused space. Commits first. The new
-	 * file is built next to the old one and atomically replaces it, so a crash
-	 * leaves the old container untouched. Encrypted contents are copied as they
-	 * are; nothing is decrypted.
+	 * Plaintext size that still fits as one new file, allowing for its index
+	 * entry (a path of up to 4096 bytes in up to 64 fragments). Slightly
+	 * conservative; this is the figure to show the user.
 	 */
-	public void compact() throws IOException
+	public long freeBytesForContent()
+	{
+		checkOpen();
+		long free = Math.max(0, gapTotal() - reserve(4096 + 64 * 16 + 64));
+		int chunk = keys.header().chunkSize();
+		long chunks = Math.max(1, (free + chunk + CipherSuite.TAG_LENGTH - 1) / (chunk + CipherSuite.TAG_LENGTH));
+		return Math.max(0, free - chunks * CipherSuite.TAG_LENGTH);
+	}
+
+	/**
+	 * Enlarges the container to {@code newSize} bytes. The new space is filled
+	 * with random data first. A crash during growing leaves a valid container,
+	 * possibly with only part of the new space.
+	 */
+	public void grow(long newSize, ProgressListener progress) throws IOException
+	{
+		checkOpen();
+		if (newSize <= size)
+			throw new IllegalArgumentException("new size must be larger than the current size of " + size + " bytes");
+		RandomFill.fill(channel, List.of(new Extent(size, newSize - size)), progress);
+		channel.force(true);
+		size = newSize;
+	}
+
+	/**
+	 * Overwrites all free space with random data. Useful after a crash, which
+	 * can interrupt the wiping that follows a commit, or after working with
+	 * wipe on delete switched off. Commits first.
+	 */
+	public void wipeFreeSpace(ProgressListener progress) throws IOException
 	{
 		commit();
-		Path dir = file.toAbsolutePath().getParent();
-		Path tmp = dir.resolve("." + file.getFileName() + ".compact-" + HexFormat.of().formatHex(randomBytes(6)));
-		TreeMap<String, Index.Item> moved = new TreeMap<>();
-		Superblock sb;
-		try (FileChannel out = FileChannel.open(tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ,
-				StandardOpenOption.WRITE))
-		{
-			copyRange(channel, out, 0, 2L * ContainerHeader.AREA_SIZE, 0);
-			out.write(ByteBuffer.allocate(2 * Superblock.SIZE), SUPERBLOCK_OFFSET);
+		RandomFill.fill(channel, allocated.gaps(DATA_OFFSET, size), progress);
+		channel.force(true);
+	}
 
-			long pos = DATA_OFFSET;
-			for (Index.Item it : items.values())
+	/** Whether space freed by deleting or replacing files is overwritten after each commit. Default: on. */
+	public boolean isWipeOnDelete()
+	{
+		return wipeOnDelete;
+	}
+
+	public void setWipeOnDelete(boolean wipeOnDelete)
+	{
+		this.wipeOnDelete = wipeOnDelete;
+	}
+
+	private long gapTotal()
+	{
+		return size - DATA_OFFSET - allocated.total();
+	}
+
+	/** Space kept for the next index, with {@code extraIndexBytes} more entries than now. */
+	private long reserve(long extraIndexBytes)
+	{
+		return sealedSize(indexBytes + extraIndexBytes + INDEX_MARGIN);
+	}
+
+	/** Encrypted size of a stream with {@code plain} bytes. */
+	long sealedSize(long plain)
+	{
+		int chunk = keys.header().chunkSize();
+		long chunks = Math.max(1, (plain + chunk - 1) / chunk);
+		return plain + chunks * CipherSuite.TAG_LENGTH;
+	}
+
+	/**
+	 * Writes a file's encrypted content into free space, claiming gaps as it
+	 * goes and never eating into the index reserve.
+	 */
+	private final class ExtentWriter extends OutputStream
+	{
+		private final int entryBase;
+		private final long sealedHint;
+		private final List<Extent> done = new ArrayList<>();
+		private long start;
+		private long pos;
+		private long end;
+		private boolean active;
+
+		ExtentWriter(int entryBase, long sealedHint)
+		{
+			this.entryBase = entryBase;
+			this.sealedHint = sealedHint;
+		}
+
+		@Override
+		public void write(int b) throws IOException
+		{
+			write(new byte[] { (byte) b }, 0, 1);
+		}
+
+		@Override
+		public void write(byte[] b, int off, int len) throws IOException
+		{
+			java.util.Objects.checkFromIndexSize(off, len, b.length);
+			while (len > 0)
 			{
-				copyRange(channel, out, it.offset(), it.sealedLength(), pos);
-				moved.put(it.entry().path(), new Index.Item(it.entry(), it.salt(), pos, it.sealedLength()));
-				pos += it.sealedLength();
+				if (!active || pos == end)
+					claim();
+				int n = (int) Math.min(len, end - pos);
+				ByteBuffer buf = ByteBuffer.wrap(b, off, n);
+				while (buf.hasRemaining())
+					pos += channel.write(buf, pos);
+				off += n;
+				len -= n;
 			}
-			byte[] indexSalt = randomBytes(Superblock.SALT_LENGTH);
-			byte[] index = Index.encode(moved);
-			long length = writeStream(out, indexSalt, pos, INDEX_AAD, o -> o.write(index));
-			// The generation keeps counting up, so the new file is never mistaken for an older state.
-			sb = new Superblock(current.generation() + 1, indexSalt, pos, length);
-			ChannelIO.writeFully(out, sb.encode(keys, RANDOM), SUPERBLOCK_OFFSET + (long) sb.slot() * Superblock.SIZE);
-			out.force(true);
-		}
-		catch (IOException | RuntimeException e)
-		{
-			Files.deleteIfExists(tmp);
-			throw e;
 		}
 
-		lock.release();
-		channel.close();
+		private void claim() throws ContainerFullException
+		{
+			if (active)
+				done.add(new Extent(start, pos - start));
+			active = false;
+			if (done.size() >= Index.MAX_EXTENTS_PER_FILE)
+				throw new ContainerFullException("free space is too fragmented", freeBytes());
+
+			List<Extent> gaps = allocated.gaps(DATA_OFFSET, size);
+			long free = gaps.stream().mapToLong(Extent::length).sum()
+					- reserve(entryBase + 16L * (done.size() + 1));
+			if (free <= 0 || gaps.isEmpty())
+				throw new ContainerFullException("the container is full", Math.max(0, free));
+
+			Extent gap = gaps.get(0);
+			if (done.isEmpty() && sealedHint > 0)
+			{
+				// Known size: prefer a gap that holds the whole file, else the largest one.
+				gap = gaps.stream().filter(g -> g.length() >= sealedHint).findFirst()
+						.orElseGet(() -> gaps.stream().max((x, y) -> Long.compare(x.length(), y.length())).orElseThrow());
+			}
+			long length = Math.min(gap.length(), free);
+			start = pos = gap.offset();
+			end = start + length;
+			allocated.add(new Extent(start, length));
+			active = true;
+		}
+
+		/** Releases the unused rest of the last claim and returns the written extents. */
+		List<Extent> finish()
+		{
+			if (active)
+			{
+				if (pos > start)
+					done.add(new Extent(start, pos - start));
+				if (end > pos)
+					allocated.remove(new Extent(pos, end - pos));
+				active = false;
+			}
+			return done;
+		}
+
+		/** Releases everything after a failure; the partial content was never referenced. */
+		void abort()
+		{
+			List<Extent> written = finish();
+			written.forEach(allocated::remove);
+			if (wipeOnDelete && !written.isEmpty())
+			{
+				try
+				{
+					RandomFill.fill(channel, written, ProgressListener.NONE);
+				}
+				catch (IOException e)
+				{
+					// Best effort; the space is free either way and wipeFreeSpace can repeat it.
+				}
+			}
+		}
+	}
+
+	/** Encrypts {@code data} into exactly the given extents (their total must equal the sealed size). */
+	private void writeFixed(List<Extent> target, byte[] salt, byte[] aad, byte[] data) throws IOException
+	{
+		OutputStream raw = new OutputStream()
+		{
+			private int index;
+			private long pos = target.get(0).offset();
+
+			@Override
+			public void write(int b) throws IOException
+			{
+				write(new byte[] { (byte) b }, 0, 1);
+			}
+
+			@Override
+			public void write(byte[] b, int off, int len) throws IOException
+			{
+				while (len > 0)
+				{
+					if (pos == target.get(index).end())
+						pos = target.get(++index).offset();
+					int n = (int) Math.min(len, target.get(index).end() - pos);
+					ByteBuffer buf = ByteBuffer.wrap(b, off, n);
+					while (buf.hasRemaining())
+						pos += channel.write(buf, pos);
+					off += n;
+					len -= n;
+				}
+			}
+		};
+		byte[] key = keys.streamKey(salt);
 		try
 		{
-			Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-			items = moved;
-			current = sb;
-		}
-		catch (IOException e)
-		{
-			Files.deleteIfExists(tmp); // the old container is unchanged and stays in use
-			throw e;
+			ChunkedAeadOutputStream enc = new ChunkedAeadOutputStream(raw, keys.header().cipherSuite(), key, aad,
+					keys.header().chunkSize());
+			enc.write(data);
+			enc.finish();
 		}
 		finally
 		{
-			channel = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE);
-			lock = lockOrFail(channel);
+			Passwords.wipe(key);
 		}
 	}
 
@@ -629,10 +939,10 @@ public final class Container implements Closeable
 		if (sb == null)
 			throw new IntegrityException("no valid superblock");
 
-		long size = channel.size();
-		checkRange(sb.indexOffset(), sb.indexLength(), size);
+		ExtentSet used = new ExtentSet();
+		claimChecked(used, sb.indexExtents());
 		byte[] data;
-		try (InputStream in = openStream(sb.indexSalt(), sb.indexOffset(), sb.indexLength(), INDEX_AAD))
+		try (InputStream in = openStream(sb.indexSalt(), sb.indexExtents(), INDEX_AAD))
 		{
 			data = in.readAllBytes();
 		}
@@ -644,59 +954,41 @@ public final class Container implements Closeable
 		{
 			throw new IntegrityException("index is inconsistent: " + e.getMessage());
 		}
+		indexBytes = 4;
 		for (Index.Item it : items.values())
-			checkRange(it.offset(), it.sealedLength(), size);
+		{
+			claimChecked(used, it.extents());
+			indexBytes += it.encodedSize();
+		}
+		allocated = used;
 		current = sb;
 	}
 
-	private static void checkRange(long offset, long length, long fileSize) throws IntegrityException
+	/** Adds extents to {@code used}, rejecting any outside the data area or overlapping another. */
+	private void claimChecked(ExtentSet used, List<Extent> extents) throws IntegrityException
 	{
-		if (offset < DATA_OFFSET || length < 0 || offset > fileSize - length)
-			throw new IntegrityException("container file is truncated");
+		for (Extent e : extents)
+		{
+			if (e.offset() < DATA_OFFSET || e.end() > size)
+				throw new IntegrityException("container file is truncated");
+			if (used.overlaps(e))
+				throw new IntegrityException("index is inconsistent: overlapping contents");
+			used.add(e);
+		}
 	}
 
-	private InputStream openStream(byte[] salt, long offset, long length, byte[] aad)
+	private InputStream openStream(byte[] salt, List<Extent> extents, byte[] aad)
 	{
 		byte[] key = keys.streamKey(salt);
 		try
 		{
-			return new ChunkedAeadInputStream(ChannelIO.input(channel, offset, length), keys.header().cipherSuite(), key,
-					aad, keys.header().chunkSize());
-		}
-		finally
-		{
-			Passwords.wipe(key);
-		}
-	}
-
-	@FunctionalInterface
-	private interface StreamBody
-	{
-		void write(OutputStream out) throws IOException;
-	}
-
-	private long writeStream(byte[] salt, long offset, byte[] aad, StreamBody body) throws IOException
-	{
-		return writeStream(channel, salt, offset, aad, body);
-	}
-
-	/** Encrypts {@code body}'s output at {@code offset} of {@code ch}; returns the encrypted length. */
-	private long writeStream(FileChannel ch, byte[] salt, long offset, byte[] aad, StreamBody body) throws IOException
-	{
-		ChannelIO.Output raw = new ChannelIO.Output(ch, offset);
-		byte[] key = keys.streamKey(salt);
-		try
-		{
-			ChunkedAeadOutputStream enc = new ChunkedAeadOutputStream(raw, keys.header().cipherSuite(), key, aad,
+			return new ChunkedAeadInputStream(ChannelIO.input(channel, extents), keys.header().cipherSuite(), key, aad,
 					keys.header().chunkSize());
-			body.write(enc);
-			enc.finish();
 		}
 		finally
 		{
 			Passwords.wipe(key);
 		}
-		return raw.written();
 	}
 
 	/** Wraps a content stream so that a length differing from the index is an integrity error. */
@@ -726,17 +1018,10 @@ public final class Container implements Closeable
 		};
 	}
 
-	private static void copyRange(FileChannel from, FileChannel to, long position, long length, long target)
-			throws IOException
+	/** For tests: where a file's encrypted content lies. */
+	List<Extent> extentsOf(String path)
 	{
-		long done = 0;
-		while (done < length)
-		{
-			long n = to.transferFrom(from.position(position + done), target + done, length - done);
-			if (n <= 0)
-				throw new IOException("unexpected end of container file");
-			done += n;
-		}
+		return items.get(VaultPaths.normalize(path)).extents();
 	}
 
 	private static byte[] randomBytes(int n)

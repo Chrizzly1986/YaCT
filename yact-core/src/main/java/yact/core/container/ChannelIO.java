@@ -5,9 +5,9 @@ package yact.core.container;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.List;
 import java.util.Objects;
 
 /** Streams over a region of a {@link FileChannel}, using positional reads and writes. */
@@ -36,13 +36,13 @@ final class ChannelIO
 		return buf.array();
 	}
 
-	/** Reads exactly {@code length} bytes starting at {@code start}; ends early only if the file is shorter. */
-	static InputStream input(FileChannel ch, long start, long length)
+	/** Reads the concatenation of {@code extents}. */
+	static InputStream input(FileChannel ch, List<Extent> extents)
 	{
 		return new InputStream()
 		{
-			private long pos = start;
-			private final long end = start + length;
+			private int index;
+			private long pos = extents.isEmpty() ? 0 : extents.get(0).offset();
 
 			@Override
 			public int read() throws IOException
@@ -57,48 +57,20 @@ final class ChannelIO
 				Objects.checkFromIndexSize(off, len, b.length);
 				if (len == 0)
 					return 0;
-				if (pos >= end)
+				while (index < extents.size() && pos >= extents.get(index).end())
+				{
+					index++;
+					if (index < extents.size())
+						pos = extents.get(index).offset();
+				}
+				if (index >= extents.size())
 					return -1;
-				int n = ch.read(ByteBuffer.wrap(b, off, (int) Math.min(len, end - pos)), pos);
+				long remaining = extents.get(index).end() - pos;
+				int n = ch.read(ByteBuffer.wrap(b, off, (int) Math.min(len, remaining)), pos);
 				if (n > 0)
 					pos += n;
 				return n;
 			}
 		};
-	}
-
-	/** Writes sequentially from {@code start}; {@link #written()} counts the bytes. Closing does not close the channel. */
-	static final class Output extends OutputStream
-	{
-		private final FileChannel ch;
-		private final long start;
-		private long pos;
-
-		Output(FileChannel ch, long start)
-		{
-			this.ch = ch;
-			this.start = start;
-			this.pos = start;
-		}
-
-		long written()
-		{
-			return pos - start;
-		}
-
-		@Override
-		public void write(int b) throws IOException
-		{
-			write(new byte[] { (byte) b }, 0, 1);
-		}
-
-		@Override
-		public void write(byte[] b, int off, int len) throws IOException
-		{
-			Objects.checkFromIndexSize(off, len, b.length);
-			ByteBuffer buf = ByteBuffer.wrap(b, off, len);
-			while (buf.hasRemaining())
-				pos += ch.write(buf, pos);
-		}
 	}
 }

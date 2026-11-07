@@ -55,9 +55,11 @@ class ContainerTest
 		file = tmp.resolve("vault.yact");
 	}
 
+	private static final long SIZE = 4L << 20;
+
 	private Container create() throws IOException
 	{
-		return Container.create(file, CipherSuite.AES_256_GCM, PASSWORD, FAST);
+		return Container.create(file, CipherSuite.AES_256_GCM, PASSWORD, FAST, SIZE, ProgressListener.NONE);
 	}
 
 	private Container open() throws Exception
@@ -84,11 +86,13 @@ class ContainerTest
 	void newContainerIsEmptyAndReopens() throws Exception
 	{
 		create().close();
-		assertEquals(Container.DATA_OFFSET, Files.size(file) - emptyIndexSize());
+		assertEquals(SIZE, Files.size(file));
 		try (Container c = open())
 		{
 			assertTrue(c.list().isEmpty());
-			assertEquals(0, c.unusedBytes());
+			assertEquals(SIZE, c.size());
+			long free = c.freeBytes();
+			assertTrue(free > SIZE - Container.DATA_OFFSET - 100_000 && free < SIZE - Container.DATA_OFFSET, "free " + free);
 		}
 	}
 
@@ -131,7 +135,7 @@ class ContainerTest
 	void privateKeyContainer() throws Exception
 	{
 		HybridKeyPair key = HybridKeyPair.generate(HybridKem.DEFAULT, RANDOM);
-		try (Container c = Container.create(file, CipherSuite.CHACHA20_POLY1305, key.publicKey()))
+		try (Container c = Container.create(file, CipherSuite.CHACHA20_POLY1305, key.publicKey(), SIZE, ProgressListener.NONE))
 		{
 			add(c, "secret", "pq".getBytes());
 		}
@@ -242,34 +246,218 @@ class ContainerTest
 		}
 	}
 
+	// ================================================================== fixed size, free space, wiping
+
 	@Test
-	void compactReclaimsSpaceAndKeepsData() throws Exception
+	void sizeIsCheckedAndProgressReported() throws Exception
 	{
-		byte[] keep = random(150_000);
+		assertThrows(IllegalArgumentException.class,
+				() -> Container.create(file, CipherSuite.AES_256_GCM, PASSWORD, FAST, Container.MIN_SIZE - 1, ProgressListener.NONE));
+		long[] last = new long[2];
+		Container.create(file, CipherSuite.AES_256_GCM, PASSWORD, FAST, SIZE, (done, total) -> {
+			last[0] = done;
+			last[1] = total;
+		}).close();
+		assertEquals(SIZE - Container.DATA_OFFSET, last[1]);
+		assertEquals(last[1], last[0]);
+	}
+
+	/** Free space must look like ciphertext: no zero runs that show how much is stored. */
+	@Test
+	void freeSpaceIsRandom() throws Exception
+	{
+		create().close();
+		byte[] data = Files.readAllBytes(file);
+		int zeros = 0;
+		for (int i = (int) Container.DATA_OFFSET + 4096; i < data.length; i++)
+			if (data[i] == 0)
+				zeros++;
+		double expected = (data.length - Container.DATA_OFFSET) / 256.0;
+		assertTrue(zeros > expected * 0.8 && zeros < expected * 1.2, zeros + " zero bytes, expected about " + expected);
+	}
+
+	@Test
+	void fullContainerRejectsContentAndStaysUnchanged() throws Exception
+	{
 		try (Container c = create())
 		{
-			add(c, "keep", keep);
-			add(c, "drop", random(300_000));
-			c.commit();
-			c.delete("drop");
-			c.commit();
-			assertTrue(c.unusedBytes() > 300_000);
+			long free = c.freeBytes();
+			assertThrows(ContainerFullException.class, () -> add(c, "too-big", random((int) SIZE)));
+			assertTrue(c.list().isEmpty());
+			assertEquals(free, c.freeBytes(), "space of the aborted file is released");
 
-			long before = Files.size(file);
-			c.compact();
-			assertEquals(0, c.unusedBytes());
-			assertTrue(Files.size(file) < before - 300_000);
-			assertArrayEquals(keep, read(c, "keep"));
-			add(c, "after", random(10)); // still usable after the file was replaced
+			Path big = tmp.resolve("big.bin");
+			Files.write(big, random((int) SIZE));
+			assertThrows(ContainerFullException.class, () -> c.importPath(big, "", false), "checked up front");
+			add(c, "small", random(1000));
+		}
+	}
+
+	@Test
+	void fullContainerStillAllowsDeleting() throws Exception
+	{
+		try (Container c = create())
+		{
+			int n = 0;
+			try
+			{
+				while (true)
+					add(c, "f" + n++, random(200_000));
+			}
+			catch (ContainerFullException expected)
+			{
+				// full
+			}
+			// Use up the rest exactly: the index reserve must still let the commit through.
+			long rest = c.freeBytesForContent();
+			assertTrue(rest < 200_000);
+			add(c, "rest", random((int) rest));
+			c.commit();
+			assertThrows(ContainerFullException.class, () -> add(c, "one more", random(20_000)));
+
+			c.delete("f0");
+			c.commit();
+			add(c, "again", random(150_000));
 		}
 		try (Container c = open())
 		{
-			assertArrayEquals(keep, read(c, "keep"));
-			assertEquals(2, c.list().size());
+			assertTrue(c.entry("again").isPresent());
 		}
-		try (var files = Files.list(tmp))
+	}
+
+	@Test
+	void growMakesRoomAndPersists() throws Exception
+	{
+		byte[] content = random(6 << 20);
+		try (Container c = create())
 		{
-			assertEquals(List.of(file), files.toList(), "no temporary files left");
+			assertThrows(ContainerFullException.class, () -> add(c, "big", content));
+			assertThrows(IllegalArgumentException.class, () -> c.grow(SIZE, ProgressListener.NONE));
+			c.grow(SIZE * 2, ProgressListener.NONE);
+			assertEquals(SIZE * 2, Files.size(file));
+			add(c, "big", content);
+		}
+		try (Container c = open())
+		{
+			assertEquals(SIZE * 2, c.size());
+			assertArrayEquals(content, read(c, "big"));
+		}
+	}
+
+	@Test
+	void freedSpaceIsReused() throws Exception
+	{
+		byte[] second = random(2_500_000);
+		try (Container c = create())
+		{
+			add(c, "first", random(2_500_000)); // two of these do not fit at once
+			c.commit();
+			c.delete("first");
+			assertThrows(ContainerFullException.class, () -> add(c, "x", random(2_500_000)), "freed only after commit");
+			c.commit();
+			add(c, "second", second);
+		}
+		try (Container c = open())
+		{
+			assertArrayEquals(second, read(c, "second"));
+			assertEquals(SIZE, Files.size(file));
+		}
+	}
+
+	@Test
+	void filesAreSpreadOverFreeGaps() throws Exception
+	{
+		byte[] big = random(1_200_000);
+		try (Container c = create())
+		{
+			for (int i = 0; i < 10; i++)
+				add(c, "f" + i, random(300_000));
+			c.commit();
+			for (int i = 0; i < 10; i += 2)
+				c.delete("f" + i);
+			c.commit();
+			c.importPath(write("big", big), "", false);
+			assertTrue(c.extentsOf("big").size() > 1, "stored in several gaps");
+		}
+		try (Container c = open())
+		{
+			assertArrayEquals(big, read(c, "big"));
+			for (int i = 1; i < 10; i += 2)
+				assertEquals(300_000, read(c, "f" + i).length);
+		}
+	}
+
+	@Test
+	void deletedContentIsOverwritten() throws Exception
+	{
+		try (Container c = create())
+		{
+			add(c, "secret", random(300_000));
+			c.commit();
+			List<Extent> where = c.extentsOf("secret");
+			byte[] before = rawBytes(where);
+			c.delete("secret");
+			c.commit();
+			assertMostlyDifferent(before, rawBytes(where));
+		}
+	}
+
+	@Test
+	void replacedContentIsOverwritten() throws Exception
+	{
+		try (Container c = create())
+		{
+			add(c, "doc", random(300_000));
+			c.commit();
+			List<Extent> where = c.extentsOf("doc");
+			byte[] before = rawBytes(where);
+			c.add("doc", new ByteArrayInputStream(random(10)), TIME, true);
+			c.commit();
+			assertMostlyDifferent(before, rawBytes(where));
+		}
+	}
+
+	@Test
+	void withoutWipingDeletedContentStays() throws Exception
+	{
+		try (Container c = create())
+		{
+			assertTrue(c.isWipeOnDelete(), "on by default");
+			c.setWipeOnDelete(false);
+			add(c, "secret", random(300_000));
+			c.commit();
+			List<Extent> where = c.extentsOf("secret");
+			byte[] before = rawBytes(where);
+			c.delete("secret");
+			c.commit();
+			assertArrayEquals(before, rawBytes(where));
+
+			c.wipeFreeSpace(ProgressListener.NONE);
+			assertMostlyDifferent(before, rawBytes(where));
+		}
+	}
+
+	@Test
+	void failedAddReleasesItsSpace() throws Exception
+	{
+		try (Container c = create())
+		{
+			long free = c.freeBytes();
+			InputStream failing = new InputStream()
+			{
+				private int n;
+
+				@Override
+				public int read()
+				{
+					if (n++ > 500_000)
+						throw new java.io.UncheckedIOException(new IOException("disk read error"));
+					return 7;
+				}
+			};
+			assertThrows(java.io.UncheckedIOException.class, () -> c.add("broken", failing, TIME, false));
+			assertFalse(c.entry("broken").isPresent());
+			assertEquals(free, c.freeBytes());
 		}
 	}
 
@@ -336,7 +524,7 @@ class ContainerTest
 		}
 		try (FileChannel ch = FileChannel.open(file, StandardOpenOption.WRITE))
 		{
-			ch.truncate(ch.size() - 1);
+			ch.truncate(Container.DATA_OFFSET + 500); // cuts into the file content
 		}
 		assertThrows(IntegrityException.class, this::open);
 	}
@@ -356,15 +544,18 @@ class ContainerTest
 		try (Container c = Container.open(snapshot, PASSWORD))
 		{
 			assertEquals(List.of("committed"), c.list().stream().map(ContainerEntry::path).toList());
-			assertTrue(c.unusedBytes() > 0, "the orphaned content is unused space");
 		}
 	}
 
 	@Test
 	void tornSuperblockFallsBackToThePreviousState() throws Exception
 	{
+		// The fallback covers a crash while the new superblock is being written. At that moment the old
+		// index is still intact: freed space is only wiped or reused after the superblock is on disk.
+		// With wiping off and enough free space, the old index stays untouched, which recreates that moment.
 		try (Container c = create())
 		{
+			c.setWipeOnDelete(false);
 			add(c, "first", random(10));
 			c.commit();
 			add(c, "second", random(10));
@@ -456,9 +647,33 @@ class ContainerTest
 
 	// ================================================================== helpers
 
-	private long emptyIndexSize()
+	private byte[] rawBytes(List<Extent> extents) throws IOException
 	{
-		return 4 + 16; // u32 count + AEAD tag of the single final chunk
+		java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+		try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ))
+		{
+			for (Extent e : extents)
+				out.write(ChannelIO.readFully(ch, e.offset(), (int) e.length()));
+		}
+		return out.toByteArray();
+	}
+
+	private static void assertMostlyDifferent(byte[] before, byte[] after)
+	{
+		assertEquals(before.length, after.length);
+		int same = 0;
+		for (int i = 0; i < before.length; i++)
+			if (before[i] == after[i])
+				same++;
+		// Random data matches by chance in about 1 of 256 bytes.
+		assertTrue(same < before.length / 100, same + " of " + before.length + " bytes unchanged");
+	}
+
+	private Path write(String name, byte[] content) throws IOException
+	{
+		Path p = tmp.resolve(name);
+		Files.write(p, content);
+		return p;
 	}
 
 	private void flipByte(long offset) throws IOException

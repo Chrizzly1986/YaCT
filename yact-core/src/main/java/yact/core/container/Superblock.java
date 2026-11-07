@@ -5,6 +5,8 @@ package yact.core.container;
 
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.bouncycastle.crypto.InvalidCipherTextException;
 
@@ -21,21 +23,33 @@ import yact.core.format.UnlockedHeader;
  * while writing one slot therefore always leaves the previous state intact.
  *
  * <pre>
- * 16   salt
- * 56   AEAD(u64 generation, 16 index salt, u64 index offset, u64 index length) + tag
- * 56   zero padding
+ * 16    salt
+ * 4050  AEAD(plain) + 16-byte tag, plain =
+ *         u64  generation
+ *         16   index stream salt
+ *         u16  number of index extents (1..250)
+ *         250 x (u64 offset, u64 length), unused entries zero
+ * 30    zero
  * </pre>
  *
  * <p>Key = stream key for the salt; the salt is fresh for every write, so the
  * all-zero nonce is never reused under one key.
  */
-record Superblock(long generation, byte[] indexSalt, long indexOffset, long indexLength)
+record Superblock(long generation, byte[] indexSalt, List<Extent> indexExtents)
 {
-	static final int SIZE = 128;
+	static final int SIZE = 4096;
 	static final int SALT_LENGTH = 16;
-	private static final int PLAIN_LENGTH = 8 + SALT_LENGTH + 8 + 8;
+	static final int MAX_INDEX_EXTENTS = 250;
+	private static final int PLAIN_LENGTH = 8 + SALT_LENGTH + 2 + MAX_INDEX_EXTENTS * 16;
 	private static final byte[] AAD = "YaCT v1 superblock".getBytes(StandardCharsets.US_ASCII);
 	private static final byte[] ZERO_NONCE = new byte[CipherSuite.NONCE_LENGTH];
+
+	Superblock
+	{
+		indexExtents = List.copyOf(indexExtents);
+		if (indexExtents.size() > MAX_INDEX_EXTENTS)
+			throw new IllegalArgumentException("index has too many extents");
+	}
 
 	/** Slot this generation is written to. */
 	int slot()
@@ -47,7 +61,11 @@ record Superblock(long generation, byte[] indexSalt, long indexOffset, long inde
 	{
 		byte[] salt = new byte[SALT_LENGTH];
 		random.nextBytes(salt);
-		byte[] plain = new ByteWriter().u63(generation).bytes(indexSalt).u63(indexOffset).u63(indexLength).toByteArray();
+		ByteWriter w = new ByteWriter().u63(generation).bytes(indexSalt).u16(indexExtents.size());
+		for (Extent e : indexExtents)
+			w.u63(e.offset()).u63(e.length());
+		byte[] plain = java.util.Arrays.copyOf(w.toByteArray(), PLAIN_LENGTH);
+
 		byte[] key = keys.streamKey(salt);
 		try
 		{
@@ -73,11 +91,17 @@ record Superblock(long generation, byte[] indexSalt, long indexOffset, long inde
 			byte[] plain = keys.header().cipherSuite().open(key, ZERO_NONCE, AAD, slot, SALT_LENGTH,
 					PLAIN_LENGTH + CipherSuite.TAG_LENGTH);
 			ByteReader r = new ByteReader(plain);
-			Superblock sb = new Superblock(r.u63(), r.bytes(SALT_LENGTH), r.u63(), r.u63());
-			r.expectEnd();
-			return sb;
+			long generation = r.u63();
+			byte[] indexSalt = r.bytes(SALT_LENGTH);
+			int count = r.u16();
+			if (count < 1 || count > MAX_INDEX_EXTENTS)
+				return null;
+			List<Extent> extents = new ArrayList<>(count);
+			for (int i = 0; i < count; i++)
+				extents.add(new Extent(r.u63(), r.u63()));
+			return new Superblock(generation, indexSalt, extents);
 		}
-		catch (InvalidCipherTextException | FormatException e)
+		catch (InvalidCipherTextException | FormatException | IllegalArgumentException e)
 		{
 			return null;
 		}
