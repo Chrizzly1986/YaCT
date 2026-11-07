@@ -154,6 +154,14 @@ class ChunkedAeadStreamTest
 		assertThrows(IOException.class, () -> out.write(1));
 	}
 
+	@Test
+	void warmUpRunsInTheBackground() throws InterruptedException
+	{
+		Thread t = WarmUp.startInBackground();
+		t.join(60_000);
+		assertEquals(false, t.isAlive());
+	}
+
 	// ------------------------------------------------------------------ helpers
 
 	private static byte[] encrypt(CipherSuite suite, byte[] plain)

@@ -51,8 +51,9 @@ mvn -q -pl yact-ui javafx:run
 | Public-key key slot      | Hybrid ML-KEM-1024 (default) or -768 (FIPS 203) + X25519 |
 | Signatures (optional)    | ML-DSA-65 (FIPS 204), SLH-DSA (FIPS 205)        |
 
-All primitives come from BouncyCastle (`bcprov-jdk18on`); YaCT implements no
-cryptographic algorithms itself. The file format is specified in
+AES-256-GCM uses the JDK's own implementation, which uses the processor's AES
+instructions; all other primitives come from BouncyCastle (`bcprov-jdk18on`).
+YaCT implements no cryptographic algorithms itself. The file format is specified in
 [docs/container-format.md](docs/container-format.md).
 
 ## Progress

@@ -158,10 +158,15 @@ class ContainerTest
 	@Test
 	void containerCanOnlyBeOpenedOnce() throws Exception
 	{
-		try (Container c = create())
+		Container first = create();
+		try
 		{
 			IOException e = assertThrows(IOException.class, this::open);
 			assertEquals("container is already open", e.getMessage());
+		}
+		finally
+		{
+			first.close();
 		}
 		open().close();
 	}

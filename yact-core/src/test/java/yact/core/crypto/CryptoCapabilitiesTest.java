@@ -11,8 +11,6 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import org.bouncycastle.crypto.agreement.X25519Agreement;
-import org.bouncycastle.crypto.engines.AESEngine;
-import org.bouncycastle.crypto.modes.GCMBlockCipher;
 import org.bouncycastle.crypto.params.Argon2Parameters;
 import org.bouncycastle.crypto.params.X25519PrivateKeyParameters;
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters;
@@ -48,8 +46,7 @@ class CryptoCapabilitiesTest
 	@Test
 	void aes256GcmKnownAnswer()
 	{
-		byte[] out = CryptoCapabilities.aeadProcess(GCMBlockCipher.newInstance(AESEngine.newInstance()), true,
-				new byte[32], new byte[12], new byte[0], new byte[16]);
+		byte[] out = CipherSuite.AES_256_GCM.seal(new byte[32], new byte[12], new byte[0], new byte[16]);
 		assertArrayEquals(Hex.decode("cea7403d4d606b6e074ec5d3baf39d18" + "d0d1c8a799996bf0265b98b5d48ab919"), out);
 	}
 

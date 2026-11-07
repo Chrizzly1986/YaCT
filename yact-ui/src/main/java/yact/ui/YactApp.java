@@ -18,6 +18,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.stage.Stage;
 import yact.core.crypto.CryptoCapabilities;
 import yact.core.crypto.CryptoCapabilities.Capability;
+import yact.core.stream.WarmUp;
 
 /**
  * Temporary entry point of the new client.
@@ -33,6 +34,8 @@ public class YactApp extends Application
 	@Override
 	public void start(Stage stage)
 	{
+		// Lets the first large file be encrypted at full speed; see WarmUp.
+		WarmUp.startInBackground();
 		List<Capability> caps = CryptoCapabilities.check();
 
 		TableView<Capability> table = new TableView<>(FXCollections.observableList(caps));

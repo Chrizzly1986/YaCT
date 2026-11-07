@@ -14,9 +14,9 @@ import java.util.function.Supplier;
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
 import org.bouncycastle.crypto.SecretWithEncapsulation;
 import org.bouncycastle.crypto.CryptoException;
+import org.bouncycastle.crypto.InvalidCipherTextException;
 import org.bouncycastle.crypto.agreement.X25519Agreement;
 import org.bouncycastle.crypto.digests.SHA3Digest;
-import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator;
 import org.bouncycastle.crypto.generators.HKDFBytesGenerator;
 import org.bouncycastle.crypto.generators.MLDSAKeyPairGenerator;
@@ -25,13 +25,8 @@ import org.bouncycastle.crypto.generators.SLHDSAKeyPairGenerator;
 import org.bouncycastle.crypto.generators.X25519KeyPairGenerator;
 import org.bouncycastle.crypto.kems.MLKEMExtractor;
 import org.bouncycastle.crypto.kems.MLKEMGenerator;
-import org.bouncycastle.crypto.modes.AEADCipher;
-import org.bouncycastle.crypto.modes.ChaCha20Poly1305;
-import org.bouncycastle.crypto.modes.GCMBlockCipher;
-import org.bouncycastle.crypto.params.AEADParameters;
 import org.bouncycastle.crypto.params.Argon2Parameters;
 import org.bouncycastle.crypto.params.HKDFParameters;
-import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.crypto.params.MLDSAKeyGenerationParameters;
 import org.bouncycastle.crypto.params.MLDSAParameters;
 import org.bouncycastle.crypto.params.MLKEMKeyGenerationParameters;
@@ -113,55 +108,45 @@ public final class CryptoCapabilities
 
 	private static String aesGcm()
 	{
-		return aead(GCMBlockCipher.newInstance(AESEngine.newInstance()), 12);
+		return aead(CipherSuite.AES_256_GCM);
 	}
 
 	private static String chaCha20Poly1305()
 	{
-		return aead(new ChaCha20Poly1305(), 12);
+		return aead(CipherSuite.CHACHA20_POLY1305);
 	}
 
-	private static String aead(AEADCipher cipher, int nonceLength)
+	/** Round trip and tamper check through {@link CipherSuite}, i.e. the code path containers use. */
+	private static String aead(CipherSuite suite)
 	{
-		byte[] key = random(32);
-		byte[] nonce = random(nonceLength);
+		byte[] key = random(CipherSuite.KEY_LENGTH);
+		byte[] nonce = random(CipherSuite.NONCE_LENGTH);
 		byte[] aad = "yact-selftest".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 		byte[] plain = random(1000);
 
-		byte[] sealed = aeadProcess(cipher, true, key, nonce, aad, plain);
-		byte[] opened = aeadProcess(cipher, false, key, nonce, aad, sealed);
-		check(Arrays.equals(plain, opened), "round trip failed");
+		byte[] sealed = suite.seal(key, nonce, aad, plain);
+		try
+		{
+			check(Arrays.equals(plain, suite.open(key, nonce, aad, sealed)), "round trip failed");
+		}
+		catch (InvalidCipherTextException e)
+		{
+			throw new IllegalStateException("round trip failed", e);
+		}
 
 		sealed[sealed.length / 2] ^= 1;
 		boolean rejected;
 		try
 		{
-			aeadProcess(cipher, false, key, nonce, aad, sealed);
+			suite.open(key, nonce, aad, sealed);
 			rejected = false;
 		}
-		catch (IllegalStateException e)
+		catch (InvalidCipherTextException e)
 		{
 			rejected = true;
 		}
 		check(rejected, "tampered ciphertext was accepted");
-		return cipher.getAlgorithmName() + ", 256-bit key, 128-bit tag";
-	}
-
-	/** Package-private so the test suite can run known-answer vectors through the same code path. */
-	static byte[] aeadProcess(AEADCipher cipher, boolean encrypt, byte[] key, byte[] nonce, byte[] aad, byte[] input)
-	{
-		cipher.init(encrypt, new AEADParameters(new KeyParameter(key), 128, nonce, aad));
-		byte[] out = new byte[cipher.getOutputSize(input.length)];
-		int len = cipher.processBytes(input, 0, input.length, out, 0);
-		try
-		{
-			len += cipher.doFinal(out, len);
-		}
-		catch (org.bouncycastle.crypto.InvalidCipherTextException e)
-		{
-			throw new IllegalStateException("authentication failed", e);
-		}
-		return len == out.length ? out : Arrays.copyOf(out, len);
+		return suite.implementation() + ", 256-bit key, 128-bit tag";
 	}
 
 	// ---------------------------------------------------------------- KDFs
