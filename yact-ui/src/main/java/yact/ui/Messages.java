@@ -23,9 +23,12 @@ final class Messages
 
 	private static final Locale LOCALE = effective(Locale.getDefault());
 
-	/** No fallback to the system locale: an untranslated language must end up in the British base bundle. */
-	private static final ResourceBundle BUNDLE = ResourceBundle.getBundle("yact.ui.messages", LOCALE,
-			ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_PROPERTIES));
+	/**
+	 * The fallback to the system locale cannot pick another translation: LOCALE is the system
+	 * locale whenever that is translated, and Locale.UK (falling back to the British base bundle)
+	 * otherwise. Named modules may not pass a ResourceBundle.Control.
+	 */
+	private static final ResourceBundle BUNDLE = ResourceBundle.getBundle("yact.ui.messages", LOCALE);
 
 	/** The locale for texts and formats, given the system locale. */
 	static Locale effective(Locale system)

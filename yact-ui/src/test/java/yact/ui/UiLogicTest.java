@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.MessageFormat;
+import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
@@ -96,6 +97,41 @@ class UiLogicTest
 		}
 	}
 
+	@Test
+	void runtimeChecksDetectInjection()
+	{
+		java.util.Set<String> mods = java.util.Set.of("java.base", "javafx.controls", "yact.core", "yact.ui",
+				"org.bouncycastle.provider", "jdk.localedata");
+		java.util.Map<String, String> noEnv = java.util.Map.of();
+		assertEquals(List.of(), RuntimeChecks.problems(List.of("-Dyact.packaged=true", "-XX:+DisableAttachMechanism",
+				"-Dfile.encoding=UTF-8"), noEnv, "", mods, true), "a clean packaged start");
+
+		for (String bad : List.of("-javaagent:/tmp/spy.jar", "-agentlib:jdwp=transport=dt_socket", "-agentpath:/x.so",
+				"--add-opens=yact.core/yact.core.format=ALL-UNNAMED", "--add-exports=yact.core/yact.core.crypto=ALL-UNNAMED",
+				"-Djdk.module.addopens=yact.core/yact.core.format=ALL-UNNAMED", "--patch-module=yact.core=/tmp/evil",
+				"-Xbootclasspath/a:/tmp/evil.jar", "-Djava.system.class.loader=Evil", "-Djava.security.properties=/tmp/p",
+				"-XX:+EnableDynamicAgentLoading"))
+			assertEquals(1, RuntimeChecks.problems(List.of(bad), noEnv, "", mods, false).size(), bad);
+
+		// Harmless settings in JAVA_TOOL_OPTIONS (proxy, trust store) are fine; an agent in it is not.
+		assertEquals(List.of(), RuntimeChecks.problems(List.of(),
+				java.util.Map.of("JAVA_TOOL_OPTIONS", "-Dhttps.proxyHost=proxy -Djavax.net.ssl.trustStore=/etc/ssl/x"), "", mods, true));
+		assertEquals(1, RuntimeChecks.problems(List.of(),
+				java.util.Map.of("JDK_JAVA_OPTIONS", "-Dx=1 -javaagent:/tmp/spy.jar"), "", mods, false).size());
+
+		// Packaged: nothing on the class path, no extra modules, no module path tricks.
+		assertEquals(1, RuntimeChecks.problems(List.of(), noEnv, "/tmp/evil.jar", mods, true).size());
+		java.util.Set<String> withEvil = new java.util.HashSet<>(mods);
+		withEvil.add("com.evil.keylogger");
+		assertEquals(1, RuntimeChecks.problems(List.of(), noEnv, "", withEvil, true).size());
+		assertEquals(1, RuntimeChecks.problems(List.of("-Djdk.module.path=/tmp/mods"), noEnv, "", mods, true).size());
+		assertEquals(List.of(), RuntimeChecks.problems(List.of("-Djdk.module.path=/x"), noEnv, "/dev/cp", withEvil, false),
+				"module path and class path are normal during development");
+
+		assertTrue(RuntimeChecks.developerOverride(List.of("-Dyact.dev=true"), false));
+		assertTrue(!RuntimeChecks.developerOverride(List.of("-Dyact.dev=true"), true), "never in the packaged application");
+	}
+
 	/** Every icon size exists and has exactly that many pixels. */
 	@Test
 	void iconsExist() throws IOException
@@ -105,10 +141,12 @@ class UiLogicTest
 			try (InputStream in = UiLogicTest.class.getResourceAsStream("/yact/ui/icons/yact-" + size + ".png"))
 			{
 				assertTrue(in != null, "icon " + size + " missing");
-				java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(in);
-				assertEquals(size, img.getWidth(), "width of icon " + size);
-				assertEquals(size, img.getHeight(), "height of icon " + size);
-				assertTrue(img.getColorModel().hasAlpha(), "icon " + size + " has transparent corners");
+				// PNG header: signature, IHDR length and type, then width, height, bit depth, colour type.
+				java.nio.ByteBuffer h = java.nio.ByteBuffer.wrap(in.readNBytes(26));
+				assertEquals(0x89504E47, h.getInt(0), "PNG signature of icon " + size);
+				assertEquals(size, h.getInt(16), "width of icon " + size);
+				assertEquals(size, h.getInt(20), "height of icon " + size);
+				assertEquals(6, h.get(25), "icon " + size + " is RGBA, with transparent corners");
 			}
 		}
 	}

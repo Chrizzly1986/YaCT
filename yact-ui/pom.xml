@@ -80,7 +80,7 @@
                 <artifactId>javafx-maven-plugin</artifactId>
                 <version>0.0.8</version>
                 <configuration>
-                    <mainClass>yact.ui.YactApp</mainClass>
+                    <mainClass>yact.ui/yact.ui.Launcher</mainClass>
                 </configuration>
             </plugin>
         </plugins>

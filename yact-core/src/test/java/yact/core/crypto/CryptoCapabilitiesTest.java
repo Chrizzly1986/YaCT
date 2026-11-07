@@ -128,9 +128,8 @@ class CryptoCapabilitiesTest
 		Security.insertProviderAt(evil, 1);
 		try
 		{
-			assertEquals("Evil", javax.crypto.Cipher.getInstance("AES/GCM/NoPadding").getProvider().getName(),
-					"the name lookup is hijacked");
-			StealingCipher.used = false; // from here on, only YaCT's own calls count
+			assertEquals("Evil", Security.getProviders("Cipher.AES/GCM/NoPadding")[0].getName(),
+					"a lookup by name would pick the injected provider");
 			assertEquals("SunJCE (JDK)", CipherSuite.AES_256_GCM.implementation());
 			assertEquals("SunJCE (JDK)", CipherSuite.CHACHA20_POLY1305.implementation());
 			assertEquals("SunJCE", JdkCrypto.hmacSha3_256().getProvider().getName());

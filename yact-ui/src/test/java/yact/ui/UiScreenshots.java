@@ -3,7 +3,6 @@
  ******************************************************************************/
 package yact.ui;
 
-import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,7 +13,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import javax.imageio.ImageIO;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -215,6 +213,52 @@ class UiScreenshots
 		pause(200);
 	}
 
+	/** Minimal PNG encoder (RGBA, no filtering): AWT's ImageIO is not available in the module. */
+	private static byte[] png(WritableImage img) throws java.io.IOException
+	{
+		int w = (int) img.getWidth();
+		int h = (int) img.getHeight();
+		java.io.ByteArrayOutputStream raw = new java.io.ByteArrayOutputStream();
+		for (int y = 0; y < h; y++)
+		{
+			raw.write(0);
+			for (int x = 0; x < w; x++)
+			{
+				int argb = img.getPixelReader().getArgb(x, y);
+				raw.write(argb >>> 16);
+				raw.write(argb >>> 8);
+				raw.write(argb);
+				raw.write(argb >>> 24);
+			}
+		}
+		java.io.ByteArrayOutputStream z = new java.io.ByteArrayOutputStream();
+		try (java.util.zip.DeflaterOutputStream d = new java.util.zip.DeflaterOutputStream(z))
+		{
+			raw.writeTo(d);
+		}
+		java.io.ByteArrayOutputStream png = new java.io.ByteArrayOutputStream();
+		png.write(new byte[] { (byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' });
+		java.nio.ByteBuffer ihdr = java.nio.ByteBuffer.allocate(13).putInt(w).putInt(h).put((byte) 8).put((byte) 6)
+				.put((byte) 0).put((byte) 0).put((byte) 0);
+		chunk(png, "IHDR", ihdr.array());
+		chunk(png, "IDAT", z.toByteArray());
+		chunk(png, "IEND", new byte[0]);
+		return png.toByteArray();
+	}
+
+	private static void chunk(java.io.ByteArrayOutputStream out, String type, byte[] data) throws java.io.IOException
+	{
+		java.nio.ByteBuffer len = java.nio.ByteBuffer.allocate(4).putInt(data.length);
+		out.write(len.array());
+		byte[] t = type.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+		out.write(t);
+		out.write(data);
+		java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+		crc.update(t);
+		crc.update(data);
+		out.write(java.nio.ByteBuffer.allocate(4).putInt((int) crc.getValue()).array());
+	}
+
 	private static Window lastWindow()
 	{
 		List<Window> windows = Window.getWindows();
@@ -226,13 +270,7 @@ class UiScreenshots
 		AtomicReference<WritableImage> img = new AtomicReference<>();
 		fx(() -> img.set(scene.snapshot(null)));
 		WritableImage fx = img.get();
-		int w = (int) fx.getWidth();
-		int h = (int) fx.getHeight();
-		BufferedImage bi = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-		for (int y = 0; y < h; y++)
-			for (int x = 0; x < w; x++)
-				bi.setRGB(x, y, fx.getPixelReader().getArgb(x, y));
-		ImageIO.write(bi, "png", out.resolve(name + ".png").toFile());
+		Files.write(out.resolve(name + ".png"), png(fx));
 	}
 
 	private static void fx(ThrowingRunnable r) throws Exception

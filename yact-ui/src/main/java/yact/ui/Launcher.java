@@ -27,6 +27,19 @@ public final class Launcher
 
 	public static void main(String[] args)
 	{
+		// Before anything else: is foreign code being injected into this process?
+		List<String> injected = RuntimeChecks.current();
+		boolean packaged = Boolean.getBoolean("yact.packaged");
+		boolean override = RuntimeChecks.developerOverride(
+				java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments(), packaged);
+		if (!injected.isEmpty() && !override)
+		{
+			System.err.println("YaCT refuses to start: code could be injected into the process through");
+			injected.forEach(p -> System.err.println("  - " + p));
+			if (args.length > 0 && args[0].startsWith("--"))
+				System.exit(2);
+			YactApp.refuseToStart(injected);
+		}
 		if (args.length > 0 && args[0].equals("--self-test"))
 			System.exit(selfTest() ? 0 : 1);
 		if (args.length > 0 && args[0].equals("--version"))
@@ -41,6 +54,7 @@ public final class Launcher
 	static boolean selfTest()
 	{
 		System.out.println("YaCT " + YactApp.VERSION + ", Java " + Runtime.version());
+		System.out.println("  [ OK ] no injected agents or JVM options");
 		List<CryptoCapabilities.Capability> caps = CryptoCapabilities.check();
 		for (CryptoCapabilities.Capability c : caps)
 			System.out.printf("  [%s] %-20s %s%n", c.available() ? " OK " : "FAIL", c.name(), c.detail());

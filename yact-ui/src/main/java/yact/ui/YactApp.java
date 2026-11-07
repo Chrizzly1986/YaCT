@@ -51,9 +51,11 @@ import yact.core.stream.WarmUp;
 /** The YaCT desktop client. */
 public class YactApp extends Application
 {
-	/** From the jar manifest; "dev" when running from the build directory. */
-	public static final String VERSION = java.util.Objects.requireNonNullElse(
-			YactApp.class.getPackage().getImplementationVersion(), "dev");
+	/** From the module descriptor or the jar manifest; "dev" when running from the build directory. */
+	public static final String VERSION = YactApp.class.getModule().getDescriptor() != null
+			&& YactApp.class.getModule().getDescriptor().rawVersion().isPresent()
+					? YactApp.class.getModule().getDescriptor().rawVersion().get()
+					: java.util.Objects.requireNonNullElse(YactApp.class.getPackage().getImplementationVersion(), "dev");
 
 	private Stage stage;
 	private Worker worker;
@@ -61,9 +63,26 @@ public class YactApp extends Application
 	private final ObjectProperty<ContainerView> view = new SimpleObjectProperty<>();
 	private Path lastKeyFile;
 
+	/** Set by the launcher when foreign code could be injected; the application then only explains and exits. */
+	private static volatile List<String> refused;
+
+	static void refuseToStart(List<String> reasons)
+	{
+		refused = List.copyOf(reasons);
+	}
+
 	@Override
 	public void start(Stage stage)
 	{
+		if (refused != null)
+		{
+			AppIcons.install();
+			Alert a = Dialogs.alert(AlertType.ERROR, Messages.get("refused.text", String.join("\n", refused)));
+			a.setHeaderText(Messages.get("refused.header"));
+			a.showAndWait();
+			Platform.exit();
+			return;
+		}
 		this.stage = stage;
 		// Lets the first large file be encrypted at full speed; see WarmUp.
 		WarmUp.startInBackground();
