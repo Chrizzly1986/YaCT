@@ -4,7 +4,6 @@
 package yact.ui;
 
 import javafx.scene.Node;
-import javafx.scene.control.ButtonType;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -48,13 +47,13 @@ final class NewKeyPairDialog extends Dialog<NewKeyPairDialog.Settings>
 		g.add(problem, 0, row, 2, 1);
 
 		getDialogPane().setContent(g);
-		getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-		Node ok = getDialogPane().lookupButton(ButtonType.OK);
+		getDialogPane().getButtonTypes().addAll(Dialogs.OK, Dialogs.CANCEL);
+		Node ok = getDialogPane().lookupButton(Dialogs.OK);
 		ok.disableProperty().bind(password.valid.not());
 		password.second.textProperty().addListener(x -> problem.setText(
 				password.second.getText().isEmpty() ? "" : String.valueOf(java.util.Objects.requireNonNullElse(password.problem(), ""))));
 
 		Dialogs.noTruncation(this);
-		setResultConverter(b -> b == ButtonType.OK ? new Settings(kem.getValue(), password.take(), kdf.getValue()) : null);
+		setResultConverter(b -> b == Dialogs.OK ? new Settings(kem.getValue(), password.take(), kdf.getValue()) : null);
 	}
 }

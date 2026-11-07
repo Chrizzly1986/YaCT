@@ -300,7 +300,7 @@ public class YactApp extends Application
 				Arrays.fill(s.password(), '\0');
 			}
 		}), fingerprint -> {
-			Alert a = new Alert(AlertType.INFORMATION);
+			Alert a = Dialogs.alert(AlertType.INFORMATION, "");
 			a.initOwner(stage);
 			a.setTitle(Messages.get("app.name"));
 			a.setHeaderText(Messages.get("keypair.done"));
@@ -329,7 +329,7 @@ public class YactApp extends Application
 			table.getColumns().add(column(Messages.get("selftest.detail"), Capability::detail));
 			table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
 			table.setPrefSize(860, 320);
-			Alert a = new Alert(CryptoCapabilities.allAvailable(caps) ? AlertType.INFORMATION : AlertType.ERROR);
+			Alert a = Dialogs.alert(CryptoCapabilities.allAvailable(caps) ? AlertType.INFORMATION : AlertType.ERROR, "");
 			a.initOwner(stage);
 			a.setTitle(Messages.get("menu.selfTest"));
 			a.setHeaderText(Messages.get(CryptoCapabilities.allAvailable(caps) ? "selftest.allOk" : "selftest.missing"));

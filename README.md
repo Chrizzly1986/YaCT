@@ -31,7 +31,9 @@ mvn -q install -DskipTests
 mvn -q -pl yact-ui javafx:run
 ```
 
-The client shows German or English, depending on the system language. It can
+The client follows the system language: German, French, Spanish or European
+Portuguese. Every other language, including US English, gets British English
+with British date and number formats. It can
 create containers (fixed size, protected by a password or a public key), open
 them, add files and folders (also by drag and drop), extract, rename and delete
 them (deleted data is overwritten), enlarge the container, manage passwords
@@ -48,6 +50,9 @@ mvn -q install -DskipTests
 LC_ALL=C.UTF-8 xvfb-run mvn -pl yact-ui test -Dtest=UiScreenshots \
     -Dyact.screenshots=/tmp/yact-shots -Dsurefire.failIfNoSpecifiedTests=false
 ```
+
+Add `-Dyact.locale=fr` (or `es`, `pt`, `en-US`, …) to render another language;
+the default is German.
 
 ## Planned cryptography
 
@@ -72,7 +77,7 @@ YaCT implements no cryptographic algorithms itself. The file format is specified
 | 2 | Container header, password key slots, chunked data encryption | done |
 | 3 | Hybrid post-quantum key slot (ML-KEM + X25519), key files | done |
 | 4 | Container operations: fixed-size container (growable), add/extract/delete files, wipe on delete | done |
-| 5 | JavaFX client (German, English) | done |
+| 5 | JavaFX client (German, British English, French, Spanish, Portuguese) | done |
 | 6 | Remove legacy code, documentation | open |
 
 ## License

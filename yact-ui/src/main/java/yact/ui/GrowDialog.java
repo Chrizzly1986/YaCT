@@ -6,7 +6,6 @@ package yact.ui;
 import java.nio.file.Path;
 
 import javafx.scene.Node;
-import javafx.scene.control.ButtonType;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -28,6 +27,7 @@ final class GrowDialog extends Dialog<Long>
 		size.setPrefColumnCount(6);
 		ChoiceBox<Sizes.Unit> unit = new ChoiceBox<>();
 		unit.getItems().addAll(Sizes.Unit.values());
+		unit.setConverter(Sizes.unitConverter());
 		unit.setValue(currentSize >= Sizes.Unit.GB.factor ? Sizes.Unit.GB : Sizes.Unit.MB);
 		Label problem = new Label();
 		problem.getStyleClass().add("problem");
@@ -36,8 +36,8 @@ final class GrowDialog extends Dialog<Long>
 		g.addRow(0, new Label(Messages.get("label.newSize")), new HBox(6, size, unit));
 		g.add(problem, 0, 1, 2, 1);
 		getDialogPane().setContent(g);
-		getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-		Node ok = getDialogPane().lookupButton(ButtonType.OK);
+		getDialogPane().getButtonTypes().addAll(Dialogs.OK, Dialogs.CANCEL);
+		Node ok = getDialogPane().lookupButton(Dialogs.OK);
 
 		long usable = Dialogs.usableSpace(file);
 		Runnable check = () -> {
@@ -56,6 +56,6 @@ final class GrowDialog extends Dialog<Long>
 		setOnShown(e -> size.requestFocus());
 
 		Dialogs.noTruncation(this);
-		setResultConverter(b -> b == ButtonType.OK ? Sizes.parse(size.getText(), unit.getValue()) : null);
+		setResultConverter(b -> b == Dialogs.OK ? Sizes.parse(size.getText(), unit.getValue()) : null);
 	}
 }

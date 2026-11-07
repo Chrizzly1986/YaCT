@@ -35,7 +35,8 @@ import yact.core.pq.HybridKeyPair;
 
 /**
  * Renders every screen to PNG files for visual review. Needs a display; run with
- * {@code xvfb-run mvn -pl yact-ui test -Dtest=UiScreenshots -Dyact.screenshots=<dir>}.
+ * {@code xvfb-run mvn -pl yact-ui test -Dtest=UiScreenshots -Dyact.screenshots=<dir>}, optionally with
+ * {@code -Dyact.locale=fr} (default {@code de}).
  * Also fails if building any screen throws.
  */
 @EnabledIfSystemProperty(named = "yact.screenshots", matches = ".+")
@@ -48,7 +49,7 @@ class UiScreenshots
 	@BeforeAll
 	static void start() throws Exception
 	{
-		Locale.setDefault(Locale.GERMAN);
+		Locale.setDefault(Locale.forLanguageTag(System.getProperty("yact.locale", "de")));
 		out = Files.createDirectories(Path.of(System.getProperty("yact.screenshots")));
 		work = Files.createTempDirectory("yact-ui");
 		CountDownLatch started = new CountDownLatch(1);

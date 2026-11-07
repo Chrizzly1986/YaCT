@@ -39,8 +39,23 @@ final class Dialogs
 			Messages.get("filter.publicKeys"), "*.yactpub");
 	static final FileChooser.ExtensionFilter ALL = new FileChooser.ExtensionFilter(Messages.get("filter.all"), "*");
 
+	/**
+	 * Our own OK and Cancel buttons. JavaFX's built-in ones are translated by
+	 * JavaFX itself, which has no European Portuguese and would show English.
+	 */
+	static final ButtonType OK = new ButtonType(Messages.get("button.ok"), ButtonData.OK_DONE);
+	static final ButtonType CANCEL = new ButtonType(Messages.get("button.cancel"), ButtonData.CANCEL_CLOSE);
+
 	private Dialogs()
 	{
+	}
+
+	/** An alert with our own buttons; with none given, a single OK. */
+	static Alert alert(AlertType type, String text, ButtonType... buttons)
+	{
+		Alert a = new Alert(type, text, buttons.length == 0 ? new ButtonType[] { OK } : buttons);
+		a.setTitle(Messages.get("app.name"));
+		return a;
 	}
 
 	/**
@@ -120,7 +135,7 @@ final class Dialogs
 	static boolean confirm(Window owner, String header, String text, String okLabel)
 	{
 		ButtonType ok = new ButtonType(okLabel, ButtonData.OK_DONE);
-		Alert a = new Alert(AlertType.CONFIRMATION, text, ok, ButtonType.CANCEL);
+		Alert a = alert(AlertType.CONFIRMATION, text, ok, CANCEL);
 		a.initOwner(owner);
 		a.setTitle(Messages.get("app.name"));
 		a.setHeaderText(header);
@@ -130,7 +145,7 @@ final class Dialogs
 
 	static void info(Window owner, String header, String text)
 	{
-		Alert a = new Alert(AlertType.INFORMATION, text);
+		Alert a = alert(AlertType.INFORMATION, text);
 		a.initOwner(owner);
 		a.setTitle(Messages.get("app.name"));
 		a.setHeaderText(header);
@@ -148,13 +163,12 @@ final class Dialogs
 	{
 		ButtonType replace = new ButtonType(Messages.get("button.replace"), ButtonData.YES);
 		ButtonType skip = new ButtonType(Messages.get("button.skip"), ButtonData.NO);
-		Alert a = new Alert(AlertType.CONFIRMATION, Messages.get("conflict.text", count, example), replace, skip,
-				ButtonType.CANCEL);
+		Alert a = alert(AlertType.CONFIRMATION, Messages.get("conflict.text", count, example), replace, skip, CANCEL);
 		a.initOwner(owner);
 		a.setTitle(Messages.get("app.name"));
 		a.setHeaderText(Messages.get("conflict.header"));
 		Optional<ButtonType> r = a.showAndWait();
-		if (r.isEmpty() || r.get() == ButtonType.CANCEL)
+		if (r.isEmpty() || r.get() == CANCEL)
 			return Optional.empty();
 		return Optional.of(r.get() == replace ? Conflict.REPLACE : Conflict.SKIP);
 	}

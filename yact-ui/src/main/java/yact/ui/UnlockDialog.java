@@ -6,7 +6,6 @@ package yact.ui;
 import java.nio.file.Path;
 
 import javafx.scene.Node;
-import javafx.scene.control.ButtonType;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
@@ -64,8 +63,8 @@ final class UnlockDialog extends Dialog<UnlockDialog.Credentials>
 		}
 
 		getDialogPane().setContent(g);
-		getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-		Node ok = getDialogPane().lookupButton(ButtonType.OK);
+		getDialogPane().getButtonTypes().addAll(Dialogs.OK, Dialogs.CANCEL);
+		Node ok = getDialogPane().lookupButton(Dialogs.OK);
 		Runnable check = () -> ok.setDisable(byPassword.isSelected() ? password.getText().isEmpty()
 				: keyFile.getText().isBlank() || keyPassword.getText().isEmpty());
 		password.textProperty().addListener(x -> check.run());
@@ -77,7 +76,7 @@ final class UnlockDialog extends Dialog<UnlockDialog.Credentials>
 
 		Dialogs.noTruncation(this);
 		setResultConverter(b -> {
-			if (b != ButtonType.OK)
+			if (b != Dialogs.OK)
 				return null;
 			Credentials c = byPassword.isSelected()
 					? new Credentials(password.getText().toCharArray(), null, null)

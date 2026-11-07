@@ -54,7 +54,7 @@ final class ErrorMessages
 
 	static void show(Window owner, Throwable e)
 	{
-		Alert alert = new Alert(AlertType.ERROR, describe(e));
+		Alert alert = Dialogs.alert(AlertType.ERROR, describe(e));
 		alert.initOwner(owner);
 		alert.setHeaderText(null);
 		alert.setTitle(Messages.get("app.name"));

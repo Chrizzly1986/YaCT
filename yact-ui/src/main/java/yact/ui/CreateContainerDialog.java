@@ -9,7 +9,6 @@ import java.nio.file.Path;
 
 import javafx.beans.Observable;
 import javafx.scene.Node;
-import javafx.scene.control.ButtonType;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -55,6 +54,7 @@ final class CreateContainerDialog extends Dialog<CreateContainerDialog.Settings>
 		setHeaderText(Messages.get("create.header"));
 
 		unit.getItems().addAll(Sizes.Unit.values());
+		unit.setConverter(Sizes.unitConverter());
 		unit.setValue(Sizes.Unit.GB);
 		ToggleGroup protect = new ToggleGroup();
 		byPassword.setToggleGroup(protect);
@@ -101,8 +101,8 @@ final class CreateContainerDialog extends Dialog<CreateContainerDialog.Settings>
 		g.add(problem, 0, row, 2, 1);
 
 		getDialogPane().setContent(g);
-		getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-		Node ok = getDialogPane().lookupButton(ButtonType.OK);
+		getDialogPane().getButtonTypes().addAll(Dialogs.OK, Dialogs.CANCEL);
+		Node ok = getDialogPane().lookupButton(Dialogs.OK);
 		for (Observable o : new Observable[] { path.textProperty(), size.textProperty(), unit.valueProperty(),
 				byPassword.selectedProperty(), password.first.textProperty(), password.second.textProperty(),
 				keyPath.textProperty() })
@@ -112,7 +112,7 @@ final class CreateContainerDialog extends Dialog<CreateContainerDialog.Settings>
 
 		Dialogs.noTruncation(this);
 		setResultConverter(b -> {
-			if (b != ButtonType.OK)
+			if (b != Dialogs.OK)
 				return null;
 			Path file = Dialogs.withExtension(Path.of(path.getText().trim()), ".yact");
 			long bytes = Sizes.parse(size.getText(), unit.getValue());

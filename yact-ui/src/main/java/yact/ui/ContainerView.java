@@ -32,7 +32,6 @@ import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
-import javafx.scene.control.ButtonType;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -100,7 +99,7 @@ final class ContainerView extends BorderPane
 	}
 
 	private static final DateTimeFormatter DATE = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
-			.withZone(ZoneId.systemDefault());
+			.withLocale(Messages.locale()).withZone(ZoneId.systemDefault());
 
 	private final Stage stage;
 	private final Worker worker;
@@ -550,6 +549,7 @@ final class ContainerView extends BorderPane
 		d.setTitle(Messages.get("action.rename"));
 		d.setHeaderText(Messages.get("rename.header"));
 		d.getEditor().setPrefColumnCount(40);
+		d.getDialogPane().getButtonTypes().setAll(Dialogs.OK, Dialogs.CANCEL);
 		Optional<String> result = d.showAndWait().map(String::trim).filter(s -> !s.isEmpty() && !s.equals(item.path()));
 		if (result.isEmpty())
 			return;
@@ -640,10 +640,10 @@ final class ContainerView extends BorderPane
 		int row = pw.addTo(g, 0);
 		g.addRow(row, new Label(Messages.get("label.kdf")), kdf);
 		d.getDialogPane().setContent(g);
-		d.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-		Node ok = d.getDialogPane().lookupButton(ButtonType.OK);
+		d.getDialogPane().getButtonTypes().addAll(Dialogs.OK, Dialogs.CANCEL);
+		Node ok = d.getDialogPane().lookupButton(Dialogs.OK);
 		ok.disableProperty().bind(pw.valid.not());
-		d.setResultConverter(b -> b == ButtonType.OK ? new NewKeyPairDialog.Settings(null, pw.take(), kdf.getValue()) : null);
+		d.setResultConverter(b -> b == Dialogs.OK ? new NewKeyPairDialog.Settings(null, pw.take(), kdf.getValue()) : null);
 		Dialogs.noTruncation(d);
 		d.showAndWait().ifPresent(s -> run(Job.<Snapshot>of(Messages.get("job.addPassword"), false, job -> {
 			try

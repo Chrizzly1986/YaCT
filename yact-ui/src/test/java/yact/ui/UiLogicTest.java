@@ -58,14 +58,16 @@ class UiLogicTest
 				"counts code points, not chars");
 	}
 
+	private static final String[] LANGUAGES = { "", "_de", "_fr", "_es", "_pt" };
+
 	/** Every key the code uses exists in every language, and every text is a valid message pattern. */
 	@Test
 	void messagesAreComplete() throws IOException
 	{
 		Properties en = load("messages.properties");
-		Properties de = load("messages_de.properties");
-		assertEquals(new TreeSet<>(en.stringPropertyNames()), new TreeSet<>(de.stringPropertyNames()),
-				"both languages have the same keys");
+		for (String lang : LANGUAGES)
+			assertEquals(new TreeSet<>(en.stringPropertyNames()), new TreeSet<>(load("messages" + lang + ".properties")
+					.stringPropertyNames()), "messages" + lang + " has the same keys as English");
 
 		Set<String> used = usedKeys();
 		assertTrue(used.size() > 100, "found " + used.size() + " keys");
@@ -73,16 +75,46 @@ class UiLogicTest
 		missing.removeAll(en.stringPropertyNames());
 		assertEquals(Set.of(), missing, "keys used in the code but missing from the bundles");
 
-		for (Properties p : new Properties[] { en, de })
+		for (String lang : LANGUAGES)
+		{
+			Properties p = load("messages" + lang + ".properties");
 			for (String key : p.stringPropertyNames())
 			{
 				String text = p.getProperty(key);
+				if (text.matches("(?s).*\\{\\d}.*"))
+					assertTrue(!text.contains("'"), "messages" + lang + ": " + key
+							+ " uses a plain apostrophe, which MessageFormat treats as a quote; use \u2019");
 				if (text.contains("{0}"))
 				{
 					String formatted = new MessageFormat(text).format(new Object[] { "A", "B", "C", "D" });
 					assertTrue(!formatted.contains("{"), key + " has an unbalanced quote: " + formatted);
 				}
 			}
+		}
+	}
+
+	/** English means British English: spelling in the texts, and UK formats for every non-translated locale. */
+	@Test
+	void englishIsBritish() throws IOException
+	{
+		assertEquals(Locale.UK, Messages.effective(Locale.US));
+		assertEquals(Locale.UK, Messages.effective(Locale.ENGLISH));
+		assertEquals(Locale.UK, Messages.effective(Locale.ITALIAN), "untranslated languages fall back to British English");
+		assertEquals(Locale.GERMANY, Messages.effective(Locale.GERMANY));
+		assertEquals(Locale.forLanguageTag("pt-BR"), Messages.effective(Locale.forLanguageTag("pt-BR")));
+
+		Pattern american = Pattern.compile("\\b(License|Licensing|Color|Behavior|Favorite|Organi[zs]ation|Center|Canceled|"
+				+ "Canceling|Dialog|Analyze|Catalog|Gray|"
+				+ "(organiz|recogniz|realiz|finaliz|initializ|authoriz|customiz|minimiz|maximiz|optimiz|synchroniz|"
+				+ "categoriz|prioritiz|summariz|normaliz|serializ|visualiz|utiliz|personaliz|standardiz)\\w*)\\b",
+				Pattern.CASE_INSENSITIVE);
+		Properties en = load("messages.properties");
+		for (String key : en.stringPropertyNames())
+		{
+			Matcher m = american.matcher(en.getProperty(key));
+			assertTrue(!m.find(), key + " uses American spelling: " + (m.find(0) ? m.group() : ""));
+		}
+		assertTrue(en.getProperty("about.text").contains("Licence"));
 	}
 
 	private static Properties load(String name) throws IOException

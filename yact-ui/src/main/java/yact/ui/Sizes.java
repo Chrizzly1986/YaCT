@@ -20,6 +20,12 @@ final class Sizes
 		}
 	}
 
+	/** Shows units in the user's language, e.g. "Go" in French. */
+	static javafx.util.StringConverter<Unit> unitConverter()
+	{
+		return Dialogs.converter(u -> Messages.get("unit." + u.name()));
+	}
+
 	private Sizes()
 	{
 	}
@@ -27,7 +33,7 @@ final class Sizes
 	static String format(long bytes)
 	{
 		if (bytes < 1024)
-			return bytes + " B";
+			return bytes + " " + Messages.get("unit.B");
 		String[] units = { "KB", "MB", "GB", "TB", "PB" };
 		double v = bytes;
 		int u = -1;
@@ -36,10 +42,10 @@ final class Sizes
 			v /= 1024;
 			u++;
 		}
-		NumberFormat nf = NumberFormat.getNumberInstance();
+		NumberFormat nf = NumberFormat.getNumberInstance(Messages.locale());
 		nf.setMaximumFractionDigits(v < 10 ? 1 : 0);
 		nf.setMinimumFractionDigits(0);
-		return nf.format(v) + " " + units[u];
+		return nf.format(v) + " " + Messages.get("unit." + units[u]);
 	}
 
 	/**
