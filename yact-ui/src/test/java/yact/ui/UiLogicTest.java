@@ -93,6 +93,23 @@ class UiLogicTest
 		}
 	}
 
+	/** Every icon size exists and has exactly that many pixels. */
+	@Test
+	void iconsExist() throws IOException
+	{
+		for (int size : AppIcons.SIZES)
+		{
+			try (InputStream in = UiLogicTest.class.getResourceAsStream("/yact/ui/icons/yact-" + size + ".png"))
+			{
+				assertTrue(in != null, "icon " + size + " missing");
+				java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(in);
+				assertEquals(size, img.getWidth(), "width of icon " + size);
+				assertEquals(size, img.getHeight(), "height of icon " + size);
+				assertTrue(img.getColorModel().hasAlpha(), "icon " + size + " has transparent corners");
+			}
+		}
+	}
+
 	/** English means British English: spelling in the texts, and UK formats for every non-translated locale. */
 	@Test
 	void englishIsBritish() throws IOException

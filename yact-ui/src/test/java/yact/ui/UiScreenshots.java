@@ -74,6 +74,27 @@ class UiScreenshots
 		});
 		pause(800);
 		save("01-start", stage.getScene());
+		if (stage.getIcons().size() != AppIcons.SIZES.length)
+			throw new AssertionError("main window has " + stage.getIcons().size() + " icons");
+		java.lang.reflect.Method about = YactApp.class.getDeclaredMethod("about");
+		about.setAccessible(true);
+		YactApp app = new YactApp();
+		java.lang.reflect.Field stageField = YactApp.class.getDeclaredField("stage");
+		stageField.setAccessible(true);
+		stageField.set(app, stage);
+		shootDialog("12-about", () -> {
+			try
+			{
+				about.invoke(app);
+			}
+			catch (ReflectiveOperationException e)
+			{
+				throw new IllegalStateException(e);
+			}
+		}, w -> {
+			if (!(w instanceof Stage s) || s.getIcons().isEmpty())
+				throw new AssertionError("dialog window has no icon");
+		});
 
 		shootDialog("02-create-password", () -> new CreateContainerDialog(stage).show());
 		shootDialog("03-create-key", () -> {
@@ -175,6 +196,12 @@ class UiScreenshots
 	/** Opens a window with {@code open}, saves its picture and closes it. */
 	private static void shootDialog(String name, Runnable open) throws Exception
 	{
+		shootDialog(name, open, w -> {
+		});
+	}
+
+	private static void shootDialog(String name, Runnable open, java.util.function.Consumer<Window> check) throws Exception
+	{
 		int before = Window.getWindows().size();
 		Platform.runLater(open);
 		for (int i = 0; i < 50 && Window.getWindows().size() <= before; i++)
@@ -182,6 +209,7 @@ class UiScreenshots
 		pause(600);
 		Window w = lastWindow();
 		save(name, w.getScene());
+		check.accept(w);
 		fx(w::hide);
 		pause(200);
 	}

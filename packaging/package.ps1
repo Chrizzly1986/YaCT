@@ -39,6 +39,7 @@ Get-ChildItem "$Target\lib\*.jar" | ForEach-Object {
 
 $ArgsList = @(
     "--type", $Type,
+    "--icon", "packaging\icons\yact.ico",
     "--name", "YaCT",
     "--app-version", $AppVersion,
     "--vendor", "Christian Hoppe",

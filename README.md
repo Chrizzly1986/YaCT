@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/yact-wordmark-dark.png">
+    <img src="docs/logo/yact-wordmark-light.png" alt="YaCT – Yet another Crypto Tool" width="460">
+  </picture>
+</p>
+
 # YaCT – Yet another Crypto Tool
 
 YaCT is an encrypted file vault for the desktop. A vault ("container") is a
@@ -118,7 +125,8 @@ LC_ALL=C.UTF-8 xvfb-run mvn -pl yact-ui test -Dtest=UiScreenshots \
 | `yact-core` | Cryptography and container engine, no UI (BouncyCastle) |
 | `yact-ui` | JavaFX desktop application |
 | `docs/container-format.md` | Specification of the file formats |
-| `packaging/` | Scripts for self-contained builds and installers |
+| `packaging/` | Scripts for self-contained builds and installers, application icons |
+| `docs/logo/` | Logo sources (SVG) and renderings |
 
 AES-256-GCM uses the JDK's implementation, which uses the processor's AES
 instructions; all other algorithms come from BouncyCastle. YaCT implements no

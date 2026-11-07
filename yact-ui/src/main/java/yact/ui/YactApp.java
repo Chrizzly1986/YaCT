@@ -34,6 +34,7 @@ import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
+import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.VBox;
@@ -65,6 +66,8 @@ public class YactApp extends Application
 		this.stage = stage;
 		// Lets the first large file be encrypted at full speed; see WarmUp.
 		WarmUp.startInBackground();
+		AppIcons.install();
+		stage.getIcons().setAll(AppIcons.all());
 		worker = new Worker(stage);
 
 		root.setTop(menu());
@@ -132,6 +135,10 @@ public class YactApp extends Application
 
 	private void showStart()
 	{
+		ImageView logo = new ImageView(AppIcons.image(128));
+		logo.setFitWidth(112);
+		logo.setFitHeight(112);
+		logo.setSmooth(true);
 		Label title = new Label(Messages.get("app.name"));
 		title.getStyleClass().add("start-title");
 		Label subtitle = new Label(Messages.get("start.subtitle"));
@@ -139,7 +146,7 @@ public class YactApp extends Application
 		Button create = startButton("start.new", this::newContainer);
 		Button open = startButton("start.open", this::openContainer);
 		Button keyPair = startButton("start.keyPair", this::newKeyPair);
-		VBox box = new VBox(14, title, subtitle, create, open, keyPair);
+		VBox box = new VBox(14, logo, title, subtitle, create, open, keyPair);
 		box.setAlignment(Pos.CENTER);
 		box.setPadding(new Insets(40));
 		root.setCenter(box);
@@ -350,7 +357,12 @@ public class YactApp extends Application
 
 	private void about()
 	{
-		Dialogs.info(stage, Messages.get("app.name") + " " + VERSION, Messages.get("about.text"));
+		Alert a = Dialogs.alert(AlertType.INFORMATION, Messages.get("about.text"));
+		a.initOwner(stage);
+		a.setHeaderText(Messages.get("app.name") + " " + VERSION);
+		ImageView logo = new ImageView(AppIcons.image(64));
+		a.setGraphic(logo);
+		a.showAndWait();
 	}
 
 	public static void main(String[] args)

@@ -47,8 +47,15 @@ for jar in "$TARGET"/lib/*.jar; do
   esac
 done
 
+# Application icon in the format of this operating system.
+case "$(uname -s)" in
+  Darwin) ICON=packaging/icons/yact.icns ;;
+  *)      ICON=packaging/icons/yact.png ;;
+esac
+
 ARGS=(
   --type "$TYPE"
+  --icon "$ICON"
   --name YaCT
   --app-version "$APP_VERSION"
   --vendor "Christian Hoppe"
