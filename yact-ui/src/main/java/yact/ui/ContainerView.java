@@ -103,7 +103,9 @@ final class ContainerView extends BorderPane
 
 	private final Stage stage;
 	private final Worker worker;
-	private final Container container;
+	private Container container;
+	private Runnable onLost = () -> {
+	};
 	private final TreeTableView<Item> tree = new TreeTableView<>();
 	private final Label status = new Label();
 	private final ObservableList<String> slots = FXCollections.observableArrayList();
@@ -124,6 +126,12 @@ final class ContainerView extends BorderPane
 		setupTree();
 		Dialogs.noTruncation((javafx.scene.Parent) getTop());
 		show(initial);
+	}
+
+	/** Called if the container had to be closed unexpectedly, e.g. after a failed re-encryption. */
+	void setOnLost(Runnable onLost)
+	{
+		this.onLost = onLost;
 	}
 
 	Path file()
@@ -617,6 +625,11 @@ final class ContainerView extends BorderPane
 		Button addPassword = button("access.addPassword", this::addPassword);
 		Button addKey = button("access.addKey", this::addPublicKey);
 		Button remove = button("access.remove", () -> removeSlot(list.getSelectionModel().getSelectedIndex()));
+		Button reencrypt = button("access.reencrypt", () -> {
+			dialog.close();
+			reencrypt();
+		});
+		reencrypt.disableProperty().bind(worker.busyProperty());
 		Button close = button("button.close", dialog::close);
 		remove.disableProperty().bind(list.getSelectionModel().selectedItemProperty().isNull()
 				.or(Bindings.size(slots).lessThanOrEqualTo(1)).or(worker.busyProperty()));
@@ -627,7 +640,7 @@ final class ContainerView extends BorderPane
 		intro.setWrapText(true);
 		Region spacer = new Region();
 		HBox.setHgrow(spacer, Priority.ALWAYS);
-		VBox box = new VBox(10, intro, list, new HBox(8, addPassword, addKey, remove, spacer, close));
+		VBox box = new VBox(10, intro, list, new HBox(8, addPassword, addKey, remove, reencrypt, spacer, close));
 		box.setPadding(new Insets(16));
 		intro.setPrefWidth(600);
 		intro.setMinHeight(javafx.scene.layout.Region.USE_PREF_SIZE);
@@ -696,10 +709,47 @@ final class ContainerView extends BorderPane
 		if (index < 0 || !Dialogs.confirm(stage, Messages.get("access.removeHeader", slots.get(index)),
 				Messages.get("access.removeText"), Messages.get("access.remove")))
 			return;
-		run(Job.<Snapshot>of(Messages.get("job.removeSlot"), false, job -> {
+		worker.submit(Job.<Snapshot>of(Messages.get("job.removeSlot"), false, job -> {
 			container.removeKeySlot(index);
 			return Snapshot.of(container);
-		}));
+		}), s -> {
+			show(s);
+			if (Dialogs.confirm(stage, Messages.get("access.removedHeader"), Messages.get("access.removedText"),
+					Messages.get("access.reencrypt")))
+				reencrypt();
+		});
+	}
+
+	// ================================================================== re-encryption
+
+	void reencrypt()
+	{
+		Optional<ReencryptDialog.Settings> settings = new ReencryptDialog(stage).showAndWait();
+		if (settings.isEmpty())
+			return;
+		ReencryptDialog.Settings s = settings.get();
+		Container old = container;
+		worker.submit(Job.<Object[]>of(Messages.get("job.reencrypt"), true, job -> {
+			job.message(Messages.get("job.reencryptText"));
+			try
+			{
+				Container fresh = old.reencrypt(s.password(), s.params(), s.recipients(), job.progress());
+				return new Object[] { fresh, Snapshot.of(fresh) };
+			}
+			finally
+			{
+				if (s.password() != null)
+					java.util.Arrays.fill(s.password(), '\0');
+			}
+		}), r -> {
+			container = (Container) r[0];
+			show((Snapshot) r[1]);
+			Dialogs.info(stage, Messages.get("reencrypt.doneHeader"), Messages.get("reencrypt.doneText"));
+		}, e -> {
+			ErrorMessages.show(stage, e);
+			if (!old.isOpen())
+				onLost.run(); // the swap failed after the old container was released; the file is unchanged
+		});
 	}
 
 	// ================================================================== closing

@@ -105,6 +105,7 @@ class UiScreenshots
 		shootDialog("04-unlock", () -> new UnlockDialog(stage, work.resolve("tresor.yact"), null).show());
 		shootDialog("05-keypair", () -> new NewKeyPairDialog(stage).show());
 		shootDialog("06-grow", () -> new GrowDialog(stage, work.resolve("t.yact"), 64L << 20, 40L << 20).show());
+		shootDialog("13-reencrypt", () -> new ReencryptDialog(stage).show());
 
 		// A container with some content, shown in the main window.
 		Path file = work.resolve("tresor.yact");

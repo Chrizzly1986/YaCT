@@ -257,6 +257,24 @@ public final class Container implements Closeable
 		}
 	}
 
+	/** Opens a container whose keys are already known, e.g. right after re-encrypting it. */
+	private static Container openWithKeys(Path file, UnlockedHeader known) throws IOException
+	{
+		byte[] expected = known.header().encode();
+		try
+		{
+			return open(file, h -> {
+				if (!Arrays.equals(h.encode(), expected))
+					throw new IntegrityException("container header changed unexpectedly");
+				return known;
+			});
+		}
+		catch (InvalidCredentialsException e)
+		{
+			throw new IllegalStateException(e); // the unlocker above never throws it
+		}
+	}
+
 	/** Tries header copy A, then B (unless identical). An integrity error outranks a wrong password. */
 	private static UnlockedHeader unlockEither(byte[] areaA, byte[] areaB, Unlocker unlocker)
 			throws IOException, InvalidCredentialsException
@@ -962,6 +980,115 @@ public final class Container implements Closeable
 		}
 	}
 
+	// ================================================================== re-encryption
+
+	/**
+	 * Re-encrypts the container with a new master key and new credentials, and
+	 * returns it opened. This container object is closed.
+	 *
+	 * <p>This is the only way to really revoke access: everyone who ever opened
+	 * the container (also through an entry removed since) may have kept its
+	 * master key. Afterwards the file opens only with {@code password} and the
+	 * private keys of {@code recipients}; all previous passwords and keys are
+	 * useless for it.
+	 *
+	 * <p>A new container of the same size is written next to the file, every
+	 * file is decrypted and encrypted again, and the new file atomically
+	 * replaces the old one. Until then, a crash or cancellation leaves the
+	 * original untouched and this container open.
+	 *
+	 * <p>Copies of the old file made before (backups, sync histories) still open
+	 * with the old credentials, and the old ciphertext may remain in unallocated
+	 * disk blocks.
+	 *
+	 * @param password   new password, or {@code null} for public keys only
+	 * @param recipients public keys that may open the container afterwards
+	 * @param progress   reports filling the new container and copying; may cancel
+	 * @throws IllegalArgumentException if neither a password nor a public key is given
+	 */
+	public Container reencrypt(char[] password, Argon2Params params, List<HybridPublicKey> recipients,
+			ProgressListener progress) throws IOException
+	{
+		checkOpen();
+		if (password == null && recipients.isEmpty())
+			throw new IllegalArgumentException("at least one password or public key is required");
+		commit();
+
+		CipherSuite suite = keys.header().cipherSuite();
+		Path dir = file.toAbsolutePath().getParent();
+		Path tmp = dir.resolve("." + file.getFileName() + ".reencrypt-" + java.util.HexFormat.of().formatHex(randomBytes(6)) + ".tmp");
+		long content = items.values().stream().mapToLong(it -> it.entry().size()).sum();
+		long total = size + content;
+
+		UnlockedHeader newKeys;
+		try
+		{
+			ProgressListener fill = (done, all) -> progress.progress(done, total);
+			Container fresh = password != null
+					? create(tmp, suite, password, params, size, fill)
+					: create(tmp, suite, recipients.get(0), size, fill);
+			try
+			{
+				for (int i = password != null ? 0 : 1; i < recipients.size(); i++)
+					fresh.addPublicKeySlot(recipients.get(i));
+				fresh.setWipeOnDelete(wipeOnDelete);
+				long[] copied = { size };
+				for (Index.Item it : items.values())
+				{
+					long base = copied[0];
+					try (InputStream in = counting(read(it.entry().path()), it.entry().size(),
+							(done, all) -> progress.progress(base + done, total)))
+					{
+						fresh.add(it.entry().path(), in, it.entry().modified(), false, it.entry().size());
+					}
+					copied[0] += it.entry().size();
+				}
+				newKeys = fresh.detach();
+			}
+			catch (IOException | RuntimeException e)
+			{
+				fresh.close();
+				throw e;
+			}
+		}
+		catch (IOException | RuntimeException e)
+		{
+			Files.deleteIfExists(tmp);
+			throw e;
+		}
+
+		// The new container is complete and on disk. Release the old one and swap the files.
+		close();
+		try
+		{
+			Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+		}
+		catch (IOException e)
+		{
+			newKeys.close();
+			Files.deleteIfExists(tmp);
+			throw e;
+		}
+		return openWithKeys(file, newKeys);
+	}
+
+	/** Commits and releases the file, keeping the keys (for {@link #openWithKeys}). */
+	private UnlockedHeader detach() throws IOException
+	{
+		commit();
+		closed = true;
+		try
+		{
+			if (lock.isValid())
+				lock.release();
+		}
+		finally
+		{
+			channel.close();
+		}
+		return keys;
+	}
+
 	// ================================================================== key slots
 
 	/** The current header, e.g. to show the key slots. */
@@ -1161,6 +1288,12 @@ public final class Container implements Closeable
 	{
 		if (closed)
 			throw new IllegalStateException("container is closed");
+	}
+
+	/** False once closed, also after {@link #reencrypt} replaced it. */
+	public boolean isOpen()
+	{
+		return !closed;
 	}
 
 	public Path file()

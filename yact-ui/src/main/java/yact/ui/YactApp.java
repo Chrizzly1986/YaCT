@@ -109,10 +109,11 @@ public class YactApp extends Application
 
 		MenuItem grow = item("action.grow", () -> view.get().grow(), null);
 		MenuItem access = item("action.access", () -> view.get().manageAccess(), null);
+		MenuItem reencrypt = item("access.reencrypt", () -> view.get().reencrypt(), null);
 		MenuItem wipe = item("menu.wipeFree", () -> view.get().wipeFreeSpace(), null);
-		for (MenuItem m : List.of(grow, access, wipe))
+		for (MenuItem m : List.of(grow, access, reencrypt, wipe))
 			m.disableProperty().bind(busy.or(noContainer));
-		Menu containerMenu = new Menu(Messages.get("menu.container"), null, grow, access, new SeparatorMenuItem(), wipe);
+		Menu containerMenu = new Menu(Messages.get("menu.container"), null, grow, access, reencrypt, new SeparatorMenuItem(), wipe);
 
 		MenuItem keyPair = item("menu.newKeyPair", this::newKeyPair, null);
 		keyPair.disableProperty().bind(busy);
@@ -167,6 +168,7 @@ public class YactApp extends Application
 	private void showContainer(Container c, ContainerView.Snapshot s)
 	{
 		ContainerView v = new ContainerView(stage, worker, c, s);
+		v.setOnLost(this::showStart);
 		root.setCenter(v);
 		view.set(v);
 	}

@@ -23,6 +23,7 @@ import java.nio.file.attribute.FileTime;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -243,6 +244,105 @@ class ContainerTest
 		try (Container c = open())
 		{
 			assertTrue(c.list().isEmpty());
+		}
+	}
+
+	// ================================================================== re-encryption
+
+	@Test
+	void reencryptionRevokesAllPreviousCredentials() throws Exception
+	{
+		char[] colleague = "colleague's password".toCharArray();
+		char[] fresh = "brand new password".toCharArray();
+		byte[] doc = random(700_000);
+		Path oldCopy = tmp.resolve("old-copy.yact");
+		byte[] oldId;
+		try (Container c = create())
+		{
+			add(c, "docs/contract.pdf", doc);
+			add(c, "notes.txt", "hello".getBytes());
+			c.addPasswordSlot(colleague, FAST);
+			c.removeKeySlot(1); // "removed" - but the colleague may have kept the master key
+			c.commit();
+			oldId = c.header().containerId();
+			Files.write(oldCopy, c.rawBytes(0, (int) c.size())); // a backup made before re-encrypting
+
+			Container re = c.reencrypt(fresh, FAST, List.of(), ProgressListener.NONE);
+			try (re)
+			{
+				assertThrows(IllegalStateException.class, c::list, "the old object is closed");
+				assertArrayEquals(doc, read(re, "docs/contract.pdf"));
+				assertEquals(2, re.list().size());
+				assertFalse(Arrays.equals(oldId, re.header().containerId()), "new container id");
+				assertEquals(Files.size(oldCopy), re.size());
+			}
+		}
+		assertThrows(InvalidCredentialsException.class, () -> Container.open(file, PASSWORD));
+		assertThrows(InvalidCredentialsException.class, () -> Container.open(file, colleague));
+		try (Container c = Container.open(file, fresh))
+		{
+			assertArrayEquals(doc, read(c, "docs/contract.pdf"));
+		}
+		// The documented limit: a copy made before still opens with the old password.
+		Container.open(oldCopy, PASSWORD).close();
+		try (var files = Files.list(tmp))
+		{
+			assertEquals(2, files.count(), "no temporary files left");
+		}
+	}
+
+	@Test
+	void reencryptionToPublicKeysOnly() throws Exception
+	{
+		HybridKeyPair alice = HybridKeyPair.generate(HybridKem.DEFAULT, RANDOM);
+		HybridKeyPair bob = HybridKeyPair.generate(HybridKem.MLKEM768_X25519, RANDOM);
+		try (Container c = create())
+		{
+			add(c, "f", "x".getBytes());
+			c.reencrypt(null, null, List.of(alice.publicKey(), bob.publicKey()), ProgressListener.NONE).close();
+		}
+		assertThrows(InvalidCredentialsException.class, this::open);
+		try (Container c = Container.open(file, alice))
+		{
+			assertArrayEquals("x".getBytes(), read(c, "f"));
+		}
+		Container.open(file, bob).close();
+	}
+
+	@Test
+	void cancelledReencryptionLeavesTheOriginal() throws Exception
+	{
+		byte[] before;
+		try (Container c = create())
+		{
+			add(c, "a", random(500_000));
+			add(c, "b", random(500_000));
+			c.commit();
+			before = c.rawBytes(0, (int) c.size());
+			long[] calls = { 0 };
+			assertThrows(java.util.concurrent.CancellationException.class,
+					() -> c.reencrypt("new password 123".toCharArray(), FAST, List.of(), (done, total) -> {
+						if (done > SIZE + 100_000) // while copying, after the new container was filled
+							throw new java.util.concurrent.CancellationException();
+						calls[0]++;
+					}));
+			assertTrue(calls[0] > 0);
+			assertEquals(2, c.list().size(), "still open and usable");
+			assertArrayEquals(before, c.rawBytes(0, (int) c.size()), "original file unchanged");
+		}
+		try (var files = Files.list(tmp))
+		{
+			assertEquals(1, files.count(), "temporary container removed");
+		}
+		open().close();
+	}
+
+	@Test
+	void reencryptionNeedsACredential() throws Exception
+	{
+		try (Container c = create())
+		{
+			assertThrows(IllegalArgumentException.class, () -> c.reencrypt(null, null, List.of(), ProgressListener.NONE));
 		}
 	}
 
