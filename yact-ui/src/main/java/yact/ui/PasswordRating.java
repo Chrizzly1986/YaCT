@@ -1,0 +1,47 @@
+/*******************************************************************************
+ * YaCT | (c) 2015-2026 Christian Hoppe | http://opensource.org/licenses/MIT
+ ******************************************************************************/
+package yact.ui;
+
+/**
+ * A rough password rating for the user. It cannot measure real strength:
+ * a long password made of common words can be strong, "Passw0rd!" is weak
+ * despite its character classes. The rating only catches the obvious cases.
+ */
+enum PasswordRating
+{
+	TOO_SHORT, WEAK, OK, STRONG;
+
+	static final int MIN_LENGTH = 8;
+
+	static PasswordRating of(CharSequence pw)
+	{
+		int length = Character.codePointCount(pw, 0, pw.length());
+		if (length < MIN_LENGTH)
+			return TOO_SHORT;
+		boolean lower = false, upper = false, digit = false, other = false;
+		for (int i = 0; i < pw.length(); i++)
+		{
+			char c = pw.charAt(i);
+			if (Character.isLowerCase(c))
+				lower = true;
+			else if (Character.isUpperCase(c))
+				upper = true;
+			else if (Character.isDigit(c))
+				digit = true;
+			else
+				other = true;
+		}
+		int classes = (lower ? 1 : 0) + (upper ? 1 : 0) + (digit ? 1 : 0) + (other ? 1 : 0);
+		if (length >= 16 || (length >= 12 && classes >= 3))
+			return STRONG;
+		if (length >= 10 && classes >= 2)
+			return OK;
+		return WEAK;
+	}
+
+	boolean acceptable()
+	{
+		return this != TOO_SHORT;
+	}
+}

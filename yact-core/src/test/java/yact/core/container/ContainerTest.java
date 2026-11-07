@@ -461,6 +461,48 @@ class ContainerTest
 		}
 	}
 
+	@Test
+	void singleFileImportAndExportReportProgressAndCanBeCancelled() throws Exception
+	{
+		byte[] content = random(500_000);
+		Path src = write("in.bin", content);
+		try (Container c = create())
+		{
+			long[] seen = new long[2];
+			c.importFile(src, "docs/in.bin", false, (done, total) -> {
+				seen[0] = done;
+				seen[1] = total;
+			});
+			assertEquals(content.length, seen[0]);
+			assertEquals(content.length, seen[1]);
+
+			Path out = tmp.resolve("out.bin");
+			c.extract("docs/in.bin", out, false, (done, total) -> seen[0] = done);
+			assertArrayEquals(content, Files.readAllBytes(out));
+
+			long free = c.freeBytes();
+			assertThrows(java.util.concurrent.CancellationException.class, () -> c.importFile(src, "cancelled", false,
+					(done, total) -> {
+						if (done > 100_000)
+							throw new java.util.concurrent.CancellationException();
+					}));
+			assertFalse(c.entry("cancelled").isPresent());
+			assertEquals(free, c.freeBytes());
+			assertThrows(IOException.class, () -> c.importFile(tmp, "dir", false, ProgressListener.NONE));
+		}
+	}
+
+	@Test
+	void cancelledCreateLeavesNoFile()
+	{
+		assertThrows(java.util.concurrent.CancellationException.class,
+				() -> Container.create(file, CipherSuite.AES_256_GCM, PASSWORD, FAST, SIZE, (done, total) -> {
+					if (done > 0)
+						throw new java.util.concurrent.CancellationException();
+				}));
+		assertFalse(Files.exists(file));
+	}
+
 	// ================================================================== import / export
 
 	@Test

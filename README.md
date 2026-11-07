@@ -24,21 +24,29 @@ Encrypted file vault with post-quantum key slots.
 mvn verify
 ```
 
-## Crypto self-test
-
-Checks that every primitive YaCT relies on works in the current runtime:
-
-```sh
-mvn -q install -DskipTests
-java -cp yact-core/target/classes:$(mvn -q -pl yact-core dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
-     yact.core.crypto.CryptoCapabilities
-```
-
-Or start the client, which currently shows the same report:
+## Run
 
 ```sh
 mvn -q install -DskipTests
 mvn -q -pl yact-ui javafx:run
+```
+
+The client shows German or English, depending on the system language. It can
+create containers (fixed size, protected by a password or a public key), open
+them, add files and folders (also by drag and drop), extract, rename and delete
+them (deleted data is overwritten), enlarge the container, manage passwords
+and keys, and create post-quantum key pairs. *Help → Crypto self-test* checks
+that every algorithm works in the current runtime.
+
+### Screenshots of all screens
+
+Renders every window and dialog to PNG files and runs an import through the UI
+logic. Needs a display, e.g. a virtual one:
+
+```sh
+mvn -q install -DskipTests
+LC_ALL=C.UTF-8 xvfb-run mvn -pl yact-ui test -Dtest=UiScreenshots \
+    -Dyact.screenshots=/tmp/yact-shots -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 ## Planned cryptography
@@ -64,7 +72,7 @@ YaCT implements no cryptographic algorithms itself. The file format is specified
 | 2 | Container header, password key slots, chunked data encryption | done |
 | 3 | Hybrid post-quantum key slot (ML-KEM + X25519), key files | done |
 | 4 | Container operations: fixed-size container (growable), add/extract/delete files, wipe on delete | done |
-| 5 | Connect the JavaFX UI | open |
+| 5 | JavaFX client (German, English) | done |
 | 6 | Remove legacy code, documentation | open |
 
 ## License

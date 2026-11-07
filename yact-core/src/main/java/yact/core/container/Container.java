@@ -353,6 +353,12 @@ public final class Container implements Closeable
 	 */
 	public void extract(String path, Path target, boolean overwrite) throws IOException
 	{
+		extract(path, target, overwrite, ProgressListener.NONE);
+	}
+
+	/** As {@link #extract(String, Path, boolean)}, reporting the bytes decrypted so far. */
+	public void extract(String path, Path target, boolean overwrite, ProgressListener progress) throws IOException
+	{
 		checkOpen();
 		String p = VaultPaths.normalize(path);
 		Index.Item it = items.get(p);
@@ -366,7 +372,7 @@ public final class Container implements Closeable
 		Path tmp = Files.createTempFile(dir, ".yact-", ".part");
 		try
 		{
-			try (InputStream in = read(p); OutputStream out = Files.newOutputStream(tmp))
+			try (InputStream in = counting(read(p), it.entry().size(), progress); OutputStream out = Files.newOutputStream(tmp))
 			{
 				in.transferTo(out);
 			}
@@ -486,6 +492,27 @@ public final class Container implements Closeable
 			{
 				add(target, in, modified, overwrite, Files.size(source));
 			}
+		}
+	}
+
+	/**
+	 * Imports one regular file from disk to {@code targetPath}, reporting the
+	 * bytes read so far. Symbolic links are rejected.
+	 *
+	 * @throws FileAlreadyExistsException if the path exists and {@code overwrite} is false
+	 * @throws ContainerFullException     if the file does not fit; the container is unchanged
+	 */
+	public void importFile(Path source, String targetPath, boolean overwrite, ProgressListener progress)
+			throws IOException
+	{
+		checkOpen();
+		if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS))
+			throw new IOException("not a regular file: " + source);
+		long size = Files.size(source);
+		Instant modified = Files.getLastModifiedTime(source, LinkOption.NOFOLLOW_LINKS).toInstant();
+		try (InputStream in = counting(Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS), size, progress))
+		{
+			add(targetPath, in, modified, overwrite, size);
 		}
 	}
 
@@ -989,6 +1016,35 @@ public final class Container implements Closeable
 		{
 			Passwords.wipe(key);
 		}
+	}
+
+	/** Reports bytes read through {@code in} to {@code progress}. */
+	private static InputStream counting(InputStream in, long total, ProgressListener progress)
+	{
+		progress.progress(0, total);
+		return new java.io.FilterInputStream(in)
+		{
+			private long count;
+
+			@Override
+			public int read() throws IOException
+			{
+				byte[] one = new byte[1];
+				return read(one, 0, 1) == -1 ? -1 : one[0] & 0xFF;
+			}
+
+			@Override
+			public int read(byte[] b, int off, int len) throws IOException
+			{
+				int n = super.read(b, off, len);
+				if (n > 0)
+				{
+					count += n;
+					progress.progress(count, total);
+				}
+				return n;
+			}
+		};
 	}
 
 	/** Wraps a content stream so that a length differing from the index is an integrity error. */
