@@ -1,2 +1,10 @@
-/bin/
+# Build output
 target/
+
+# IDE files
+.classpath
+.project
+.settings/
+.idea/
+*.iml
+.vscode/

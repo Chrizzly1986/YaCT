@@ -49,7 +49,9 @@ import yact.core.stream.WarmUp;
 /** The YaCT desktop client. */
 public class YactApp extends Application
 {
-	public static final String VERSION = "1.0.0-SNAPSHOT";
+	/** From the jar manifest; "dev" when running from the build directory. */
+	public static final String VERSION = java.util.Objects.requireNonNullElse(
+			YactApp.class.getPackage().getImplementationVersion(), "dev");
 
 	private Stage stage;
 	private Worker worker;

@@ -1,85 +1,129 @@
 # YaCT – Yet another Crypto Tool
 
-Encrypted file vault with post-quantum key slots.
+YaCT is an encrypted file vault for the desktop. A vault ("container") is a
+single file of fixed size that holds your files encrypted. You open it with a
+password or with a **post-quantum key pair**, add and extract files, and close
+it again.
 
-> **Status: under reconstruction.** The legacy Eclipse code in `src/` does not
-> encrypt anything and must not be used. It stays in the repository only until its
-> UI parts are migrated. The new code lives in the Maven modules below.
+> **Status:** version 1.0 in development. The cryptography follows current
+> standards and is thoroughly tested, but it has **not been reviewed by
+> independent security experts**. Do not rely on YaCT as your only protection
+> for critical data until it has been. See [SECURITY.md](SECURITY.md).
 
-## Modules
+## Features
 
-| Module      | Contents                                                     |
-|-------------|--------------------------------------------------------------|
-| `yact-core` | UI-independent crypto and container engine (BouncyCastle)    |
-| `yact-ui`   | JavaFX desktop client                                        |
+- **Strong encryption:** AES-256-GCM (default) or ChaCha20-Poly1305; every
+  64 KiB block is authenticated, so tampering and damage are detected.
+- **Passwords:** Argon2id (64 MiB, or 256 MiB in the "strong" profile).
+- **Post-quantum keys:** share a container with someone's public key.
+  ML-KEM-1024 (FIPS 203) combined with X25519: an attacker has to break both.
+- **Several ways in:** a container can have up to 16 entries – passwords and
+  public keys – each of which opens it.
+- **Fixed size, no leaks:** free space is filled with random data, so the
+  file does not reveal how much it holds. Containers can be enlarged.
+- **Deleting means deleting:** deleted files are overwritten with random data
+  (can be switched off).
+- **Crash-safe:** a crash or power cut leaves the container in its previous or
+  its new state, never broken.
+- **Languages:** German, English (British), French, Spanish, Portuguese.
 
-## Requirements
+## Getting YaCT
 
-- JDK 21 or newer
-- Maven 3.9+
+**Ready-made builds** for Linux, Windows and macOS are attached as artifacts to
+every run of the [build workflow](.github/workflows/build.yml) (GitHub, tab
+*Actions*). They contain their own Java runtime; nothing else needs to be
+installed. The builds are not signed, so Windows SmartScreen and macOS
+Gatekeeper will warn on first start.
 
-## Build and test
+**From source:** see [Building](#building).
+
+## Using YaCT
+
+1. **Create a container:** *Create new container…*, choose where to save it,
+   its size and a password (or a public key). The container is filled with
+   random data, which takes a moment for large sizes.
+2. **Add files:** drag files or folders into the window, or use *Add files…*
+   and *Add folder…*. Select a folder first to add into it.
+3. **Get files out:** select files or folders and choose *Extract…*.
+4. **Share a container:** the other person creates a key pair (*Keys → New
+   key pair…*) and sends you the `.yactpub` file. In *Access…* choose *Add
+   key…* and compare the fingerprint with them by phone or in person.
+5. **Close** the container (*File → Close container*) when you are done; this
+   also happens when you quit.
+
+Keep your private key file (`.yactkey`) and passwords safe: **without them,
+nobody can open the container – including you.** There is no recovery.
+
+## Security in brief
+
+YaCT protects your files against anyone who gets hold of the container file
+but not a password or key: a lost laptop, a stolen USB stick, a cloud
+provider. It cannot protect against malware on the computer while the
+container is open, against weak passwords, or against copies of the container
+kept elsewhere (backups, cloud versions). Details: [SECURITY.md](SECURITY.md);
+the file format: [docs/container-format.md](docs/container-format.md).
+
+## Building
+
+Requirements: JDK 21 or newer, Maven 3.9 or newer.
 
 ```sh
-mvn verify
+mvn verify                       # build and run all tests
+mvn -q install -DskipTests       # build only
+mvn -q -pl yact-ui javafx:run    # start the application
 ```
 
-## Run
+The build also produces a runnable jar with its libraries in `lib/`:
 
 ```sh
-mvn -q install -DskipTests
-mvn -q -pl yact-ui javafx:run
+java -jar yact-ui/target/yact-ui-1.0.0-SNAPSHOT.jar
 ```
 
-The client follows the system language: German, French, Spanish or European
-Portuguese. Every other language, including US English, gets British English
-with British date and number formats. It can
-create containers (fixed size, protected by a password or a public key), open
-them, add files and folders (also by drag and drop), extract, rename and delete
-them (deleted data is overwritten), enlarge the container, manage passwords
-and keys, and create post-quantum key pairs. *Help → Crypto self-test* checks
-that every algorithm works in the current runtime.
+### Self-contained application
 
-### Screenshots of all screens
+`jpackage` (part of the JDK) builds an application with its own Java runtime,
+for the operating system it runs on:
 
-Renders every window and dialog to PNG files and runs an import through the UI
-logic. Needs a display, e.g. a virtual one:
+```sh
+packaging/package.sh             # Linux, macOS: app image in target/dist/
+packaging/package.sh deb         # Linux installer (needs dpkg-deb and fakeroot)
+packaging/package.sh dmg         # macOS installer
+powershell -File packaging\package.ps1            # Windows app image
+powershell -File packaging\package.ps1 -Type msi  # Windows installer (needs WiX)
+```
+
+Installers register `.yact` files, so a double-click opens them in YaCT.
+
+### Checks
+
+```sh
+target/dist/YaCT/bin/YaCT --self-test   # crypto and locale data of a packaged build
+```
+
+*Help → Crypto self-test* shows the same in the application.
+
+Screenshots of every screen, rendered on a virtual display (also runs an
+import through the UI end to end):
 
 ```sh
 mvn -q install -DskipTests
 LC_ALL=C.UTF-8 xvfb-run mvn -pl yact-ui test -Dtest=UiScreenshots \
-    -Dyact.screenshots=/tmp/yact-shots -Dsurefire.failIfNoSpecifiedTests=false
+    -Dyact.screenshots=/tmp/yact-shots -Dyact.locale=de -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Add `-Dyact.locale=fr` (or `es`, `pt`, `en-US`, …) to render another language;
-the default is German.
+## Project structure
 
-## Planned cryptography
+| Path | Contents |
+|---|---|
+| `yact-core` | Cryptography and container engine, no UI (BouncyCastle) |
+| `yact-ui` | JavaFX desktop application |
+| `docs/container-format.md` | Specification of the file formats |
+| `packaging/` | Scripts for self-contained builds and installers |
 
-| Purpose                  | Algorithm                                       |
-|--------------------------|-------------------------------------------------|
-| Data encryption          | AES-256-GCM (default), ChaCha20-Poly1305        |
-| Password → key           | Argon2id                                        |
-| Combining secrets        | HKDF over SHA3-256                              |
-| Public-key key slot      | Hybrid ML-KEM-1024 (default) or -768 (FIPS 203) + X25519 |
-| Signatures (optional)    | ML-DSA-65 (FIPS 204), SLH-DSA (FIPS 205)        |
+AES-256-GCM uses the JDK's implementation, which uses the processor's AES
+instructions; all other algorithms come from BouncyCastle. YaCT implements no
+cryptographic algorithm itself.
 
-AES-256-GCM uses the JDK's own implementation, which uses the processor's AES
-instructions; all other primitives come from BouncyCastle (`bcprov-jdk18on`).
-YaCT implements no cryptographic algorithms itself. The file format is specified in
-[docs/container-format.md](docs/container-format.md).
+## Licence
 
-## Progress
-
-| Milestone | Content | Status |
-|---|---|---|
-| 1 | Maven build, crypto self-test | done |
-| 2 | Container header, password key slots, chunked data encryption | done |
-| 3 | Hybrid post-quantum key slot (ML-KEM + X25519), key files | done |
-| 4 | Container operations: fixed-size container (growable), add/extract/delete files, wipe on delete | done |
-| 5 | JavaFX client (German, British English, French, Spanish, Portuguese) | done |
-| 6 | Remove legacy code, documentation | open |
-
-## License
-
-MIT, see `Licence.txt`.
+MIT, see [Licence.txt](Licence.txt).
