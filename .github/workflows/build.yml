@@ -1,5 +1,8 @@
 # Tests YaCT and builds a self-contained application on Linux, Windows and macOS.
-# The packages are attached to each run as artifacts (unsigned; see README).
+# The packages are attached to each run as artifacts, with SHA256SUMS (unsigned; see README).
+#
+# Supply chain: actions are pinned to commit hashes (the comment names the version);
+# every Maven artifact is checked against .mvn/checksums before it is used.
 name: Build
 
 on:
@@ -19,9 +22,11 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '21'
@@ -42,7 +47,12 @@ jobs:
       # primitive and the locale data inside the bundled Java runtime.
       - name: Self-test (Linux)
         if: runner.os == 'Linux'
-        run: target/dist/YaCT/bin/YaCT --self-test
+        run: |
+          target/dist/YaCT/bin/YaCT --self-test
+          # Code injection must be refused.
+          set +e
+          JDK_JAVA_OPTIONS="--add-opens=yact.core/yact.core.format=ALL-UNNAMED" target/dist/YaCT/bin/YaCT --self-test
+          test $? -eq 2 || { echo "injected option was not refused"; exit 1; }
 
       - name: Self-test (macOS)
         if: runner.os == 'macOS'
@@ -56,8 +66,11 @@ jobs:
           $p = Start-Process -FilePath target\dist\YaCT\YaCT.exe -ArgumentList '--self-test' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: YaCT-${{ runner.os }}
-          path: target/dist/
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.zip
+            target/dist/SHA256SUMS
           if-no-files-found: error

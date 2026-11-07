@@ -1,0 +1,13 @@
+# Proposes updates for Maven dependencies and GitHub Actions.
+# Updated artifacts fail the build until their checksums in .mvn/checksums have
+# been checked and recorded (see README, "Updating dependencies"): on purpose.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
