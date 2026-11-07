@@ -1074,6 +1074,16 @@ public final class Container implements Closeable
 		};
 	}
 
+	/**
+	 * For tests: raw bytes of the container file, read through this
+	 * container's own channel. On Windows the file lock is mandatory, so a
+	 * second channel cannot read the file while it is open.
+	 */
+	byte[] rawBytes(long offset, int length) throws IOException
+	{
+		return ChannelIO.readFully(channel, offset, length);
+	}
+
 	/** For tests: where a file's encrypted content lies. */
 	List<Extent> extentsOf(String path)
 	{

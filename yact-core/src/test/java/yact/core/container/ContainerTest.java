@@ -395,10 +395,10 @@ class ContainerTest
 			add(c, "secret", random(300_000));
 			c.commit();
 			List<Extent> where = c.extentsOf("secret");
-			byte[] before = rawBytes(where);
+			byte[] before = rawBytes(c, where);
 			c.delete("secret");
 			c.commit();
-			assertMostlyDifferent(before, rawBytes(where));
+			assertMostlyDifferent(before, rawBytes(c, where));
 		}
 	}
 
@@ -410,10 +410,10 @@ class ContainerTest
 			add(c, "doc", random(300_000));
 			c.commit();
 			List<Extent> where = c.extentsOf("doc");
-			byte[] before = rawBytes(where);
+			byte[] before = rawBytes(c, where);
 			c.add("doc", new ByteArrayInputStream(random(10)), TIME, true);
 			c.commit();
-			assertMostlyDifferent(before, rawBytes(where));
+			assertMostlyDifferent(before, rawBytes(c, where));
 		}
 	}
 
@@ -427,13 +427,13 @@ class ContainerTest
 			add(c, "secret", random(300_000));
 			c.commit();
 			List<Extent> where = c.extentsOf("secret");
-			byte[] before = rawBytes(where);
+			byte[] before = rawBytes(c, where);
 			c.delete("secret");
 			c.commit();
-			assertArrayEquals(before, rawBytes(where));
+			assertArrayEquals(before, rawBytes(c, where));
 
 			c.wipeFreeSpace(ProgressListener.NONE);
-			assertMostlyDifferent(before, rawBytes(where));
+			assertMostlyDifferent(before, rawBytes(c, where));
 		}
 	}
 
@@ -581,7 +581,9 @@ class ContainerTest
 			c.commit();
 			add(c, "pending", random(10));
 			assertTrue(c.hasUncommittedChanges());
-			Files.copy(file, snapshot); // the state on disk if the program died now
+			// The state on disk if the program died now (read through the open container: on Windows its lock
+			// keeps other channels out).
+			Files.write(snapshot, c.rawBytes(0, (int) Files.size(file)));
 		}
 		try (Container c = Container.open(snapshot, PASSWORD))
 		{
@@ -689,14 +691,12 @@ class ContainerTest
 
 	// ================================================================== helpers
 
-	private byte[] rawBytes(List<Extent> extents) throws IOException
+	/** Raw bytes at {@code extents}, read through the open container (see Container#rawBytes). */
+	private static byte[] rawBytes(Container c, List<Extent> extents) throws IOException
 	{
 		java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-		try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ))
-		{
-			for (Extent e : extents)
-				out.write(ChannelIO.readFully(ch, e.offset(), (int) e.length()));
-		}
+		for (Extent e : extents)
+			out.write(c.rawBytes(e.offset(), (int) e.length()));
 		return out.toByteArray();
 	}
 
