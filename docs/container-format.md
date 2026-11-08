@@ -40,6 +40,10 @@ the encrypted data. Bytes after the header's MAC are zero.
 - **Superblocks:** the valid slot with the higher generation is current. If
   that write is torn, the other slot still describes the previous state, whose
   data is untouched at that point.
+- Once the new superblock is on disk, the slot with the previous state is
+  overwritten with random data and forced. Damaging the newest superblock can
+  therefore never bring back an older state (with deleted files, or the index
+  that names them); the container then fails to open with an integrity error.
 - Space freed by a commit (deleted and replaced files, the previous index)
   becomes free only after the new superblock is on disk. Only then may it be
   wiped or reused.
@@ -59,7 +63,9 @@ deleted files. Afterwards the data cannot be recovered even with the key.
 
 A crash between commit and wiping leaves that space unwiped but free. A
 "wipe free space" operation overwrites all free space and can repair this.
-Wiping can be switched off per session, for speed.
+A crash before the previous superblock is wiped leaves it readable; the
+security check (`Container.verify`) finds and overwrites such a slot.
+Wiping can be switched off per session through the API, for speed.
 
 ## Superblock
 
@@ -72,9 +78,11 @@ Wiping can be switched off per session, for speed.
 Record: 8 generation · 16 index stream salt · 2 number of index extents
 (1..250) · 250 × (8 offset, 8 length), unused entries zero.
 
-Key = stream key for the salt; associated data = `"YaCT v1 superblock"`. The
-salt is new for every write, so the fixed nonce is never reused under one key.
-Generation *g* is written to slot *g* mod 2.
+Key = HKDF(master key, salt = container id, info = `"YaCT v1 superblock key"`,
+superblock salt) – a label of its own, so a superblock key never equals a
+stream key. Associated data = `"YaCT v1 superblock"`. The salt is new for every
+write, so the fixed nonce is never reused under one key. Generation *g* is
+written to slot *g* mod 2.
 
 ## Index
 
@@ -84,22 +92,28 @@ complete new index, preferring the largest free gaps.
 
 | Size | Field |
 |---|---|
-| 4 | number of entries |
+| 4 | number of entries, at most 1 000 000 |
 | | per entry: |
 | 2 + n | path length, path (UTF-8) |
 | 8 | plaintext size |
 | 8 | last modified, milliseconds since 1970-01-01T00:00Z |
 | 16 | stream salt of the content |
-| 4 | number of extents (1..1 000 000) |
+| 4 | number of extents (1..100 000) |
 | 16 × n | extents: 8 offset, 8 length |
 
 A file's encrypted content is the concatenation of its extents. When opening,
-every extent must lie within the data area, and no two may overlap.
+every extent must lie within the data area, and no two may overlap. The
+encrypted index may be at most 256 MiB.
 
 Paths are relative, use `/`, are in Unicode NFC and contain no empty, `.` or
-`..` segments, backslashes or control characters (at most 4096 UTF-8 bytes).
-This rules out writing outside the target directory on extraction. A file and
-a directory may not share a name.
+`..` segments (at most 4096 UTF-8 bytes in all, 255 per segment). So that a
+path can be extracted on every operating system, segments must not contain
+control characters or `\ < > : " | ? *`, must not end with a dot or space, and
+must not be a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`…, `LPT1`…,
+also with an extension). Two paths may not differ only in upper and lower
+case, and a file and a directory may not share a name. Together with the
+extraction rules (no symbolic links followed, the real target path checked),
+this rules out writing outside the target directory.
 
 File contents are encrypted streams with associated data `"YaCT v1 file"`.
 
@@ -117,9 +131,14 @@ password ──Argon2id(salt, params)──► key-encryption key (KEK)
    header MAC key (HMAC-SHA3-256)                       one key per encrypted stream
 ```
 
-- The master key never changes for the life of a container. Changing a password
-  rewraps it in a new slot; the data is not re-encrypted.
-- Every key slot wraps the same master key.
+- Every key slot wraps the same master key. Adding a password or key wraps it
+  in a new slot; the data is not re-encrypted.
+- **Re-encrypting** creates a new container with a new master key and new
+  slots next to the old one, copies every file into it, and replaces the old
+  file atomically. Afterwards no previous password or key, and no previously
+  obtained master key, opens the file.
+- A third label, `"YaCT v1 superblock key"` ‖ superblock salt, derives the
+  superblock keys (see Superblock).
 - HKDF `info` is the label followed by each context value, each prefixed with
   its 2-byte length.
 
@@ -151,8 +170,8 @@ header is rewritten.
 
 | Size | Field |
 |---|---|
-| 4 | Argon2id memory in KiB, at most 4 GiB |
-| 4 | Argon2id iterations, 1..64 |
+| 4 | Argon2id memory in KiB, 8 × parallelism .. 1 GiB |
+| 4 | Argon2id iterations, 1..10 |
 | 1 | Argon2id parallelism, 1..16 |
 | 16 | salt |
 | 12 | nonce |
@@ -163,8 +182,12 @@ header is rewritten.
 - AEAD associated data = `"YaCT v1 password slot"` ‖ container id ‖ the first
   three fields and the salt, as encoded above. This binds the slot to its
   container and its parameters.
-- Default parameters: 64 MiB, 3 iterations, 4 lanes (RFC 9106, second
-  recommended option). Strong profile: 256 MiB, 4 iterations, 4 lanes.
+- Default parameters: 128 MiB, 3 iterations, 4 lanes. Strong profile:
+  512 MiB, 4 iterations, 4 lanes. Both exceed RFC 9106's second recommended
+  option (64 MiB, 3 iterations).
+- The limits keep a manipulated header from demanding unbounded memory or
+  time. A reader skips a slot whose memory it cannot afford and reports that
+  only if no other slot opens.
 
 ## Key slot type 2: hybrid public key (post-quantum)
 
@@ -237,7 +260,8 @@ a key.
 | 12 | nonce |
 | 112 | AES-256-GCM(ML-KEM seed (64) ‖ X25519 scalar (32)) + 16-byte tag |
 
-- Key = Argon2id(password, salt, params); associated data = all preceding bytes.
+- Key = Argon2id(password, salt, params), with the same limits as password
+  slots; associated data = all preceding bytes.
 - The ML-KEM key is stored as its 64-byte seed (d ‖ z), the form FIPS 203
   recommends; the public key is recomputed from the seeds.
 
@@ -275,8 +299,9 @@ only once its final chunk has been verified.
   the file system (copy-on-write, snapshots), backups, sync services or an
   SSD's wear levelling. They remain encrypted, so they matter only to someone
   who has a key.
-- **Revoking access:** removing a key slot does not lock out someone who has
-  already opened the container; they may have kept the master key.
+- **Revoking access by removing a slot:** removing a key slot alone does not
+  lock out someone who has already opened the container; they may have kept
+  the master key. Re-encrypting does (see Key hierarchy).
 - **Metadata:** the header shows how many password and public-key slots exist.
   The file size only reveals the chosen container size.
 - **Fake public keys:** YaCT cannot tell whether a public key really belongs to

@@ -8,3 +8,6 @@ target/
 .idea/
 *.iml
 .vscode/
+
+# Backup Maven writes when recording checksums (packaging/record-checksums.sh)
+.mvn/checksums/*.bak

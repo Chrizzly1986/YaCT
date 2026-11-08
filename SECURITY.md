@@ -24,8 +24,9 @@ folder.
 - They learn the container size, the chosen cipher and how many password and
   public-key entries it has (not whose keys). Free space is random data, so the
   file does not reveal how much it holds.
-- Any change to the container is detected when the affected data is read;
-  damaging the newest state cannot bring back an older one.
+- Any change to the container is detected when the affected data is read
+  (the security check reads all of it); damaging the newest state cannot bring
+  back an older one.
 - A manipulated file cannot crash YaCT, make it allocate unbounded memory, or
   write files outside the target folder on extraction (also not through
   symbolic links or Windows device names and alternate data streams).
@@ -52,6 +53,29 @@ encryption or read keys. YaCT defends in layers:
 | **Encapsulation** | YaCT's code is a set of Java modules. No package is open to reflection, and the core is exported only to the YaCT user interface: other code in the process can neither read private fields such as the master key nor call the core. |
 | **Packaged runtime** | Everything is linked into one runtime image without a class path. The image contains no support for Java agents, the debugger or attaching; the JVM refuses attach requests and writes no core dumps. JavaFX's native libraries live inside the runtime instead of a user-writable cache folder. Installers install into protected locations (Program Files, /opt, /Applications). |
 | **Start-up check** | YaCT refuses to start if Java agents, `--add-opens` and similar options, a custom system class loader or security configuration, a class path or unexpected modules are present – e.g. injected through `JAVA_TOOL_OPTIONS`. |
+
+## Checking it yourself
+
+*Help → Security check* (also on the start screen) repeats these checks
+whenever you like and explains each result: what is fine, what should be
+improved and what is a real problem. `YaCT --self-test` runs the installation
+part on the command line.
+
+- **Installation:** the known-answer tests of every primitive and the origin
+  of the JDK providers; no injected code; YaCT's modules opened to no other
+  code (checked in the running program); the packaged runtime with its
+  protections (no attaching, no core dumps, JavaFX's native libraries inside);
+  the age of the Java runtime.
+- **Open container:** every file is read and authenticated, damaged files are
+  named; both header copies and the index on disk must match what YaCT has
+  open – otherwise another program changed the file while it was open; an
+  older state that can still be decrypted is overwritten; password entries
+  weaker than the standard; a container file other users can read or write
+  (YaCT can fix this); a container in a synchronised folder, whose version
+  history keeps old states with their old access.
+
+A clean result means the checks found nothing. It cannot rule out what no
+application can see, such as malware running as you – see below.
 
 ## What YaCT cannot protect against
 
