@@ -2,7 +2,8 @@
 # The packages are attached to each run as artifacts, with SHA256SUMS (unsigned; see README).
 #
 # Supply chain: actions are pinned to commit hashes (the comment names the version);
-# every Maven artifact is checked against .mvn/checksums before it is used.
+# Maven itself is fixed by the wrapper (./mvnw, SHA-256 checked) and every Maven
+# artifact is checked against .mvn/checksums before it is used.
 name: Build
 
 on:
@@ -32,8 +33,13 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Test
-        run: mvn -B verify
+      - name: Test (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: ./mvnw -B verify
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: .\mvnw.cmd -B verify
 
       - name: Package (Linux, macOS)
         if: runner.os != 'Windows'

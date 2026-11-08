@@ -15,3 +15,7 @@
 *.PDF	 diff=astextplain
 *.rtf	 diff=astextplain
 *.RTF	 diff=astextplain
+
+# Maven wrapper: the shell script needs LF, the batch file CRLF
+mvnw     text eol=lf
+mvnw.cmd text eol=crlf

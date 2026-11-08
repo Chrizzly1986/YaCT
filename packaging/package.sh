@@ -44,7 +44,7 @@ case "$(uname -s)" in
 esac
 
 echo "Building YaCT $VERSION ..."
-mvn -B -q -DskipTests package
+./mvnw -B -q -DskipTests package
 
 TARGET="yact-ui/target"
 MODS="$TARGET/jpackage-modules"

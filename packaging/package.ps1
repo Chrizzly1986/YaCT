@@ -22,7 +22,7 @@ $Version = ([xml](Get-Content pom.xml)).project.version
 $AppVersion = $Version -replace '-SNAPSHOT$', ''
 
 Write-Host "Building YaCT $Version ..."
-mvn -B -q -DskipTests package
+& .\mvnw.cmd -B -q -DskipTests package
 if ($LASTEXITCODE -ne 0) { throw "Maven build failed" }
 
 $Target = "yact-ui\target"
