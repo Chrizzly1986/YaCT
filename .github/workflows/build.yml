@@ -54,7 +54,10 @@ jobs:
       - name: Self-test (Linux)
         if: runner.os == 'Linux'
         run: |
-          target/dist/YaCT/bin/YaCT --self-test
+          set -o pipefail
+          target/dist/YaCT/bin/YaCT --self-test | tee self-test.txt
+          # The packaged application must pass its own security check without warnings.
+          if grep -q '\[WARN\]' self-test.txt; then echo "security check warns"; exit 1; fi
           # Code injection must be refused.
           set +e
           JDK_JAVA_OPTIONS="--add-opens=yact.core/yact.core.format=ALL-UNNAMED" target/dist/YaCT/bin/YaCT --self-test

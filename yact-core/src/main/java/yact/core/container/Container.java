@@ -1089,6 +1089,88 @@ public final class Container implements Closeable
 		return keys;
 	}
 
+	// ================================================================== verification
+
+	/**
+	 * Checks the container on disk: reads and authenticates every file, compares
+	 * both header copies and the current superblock and index with the state in
+	 * use, and makes sure no older state can still be decrypted (overwriting one
+	 * if found, e.g. after an interrupted save). Pending changes are committed
+	 * first, so that what is checked is what is on disk. Only reads otherwise.
+	 *
+	 * @param progress bytes of file content checked so far, of the total
+	 */
+	public VerificationReport verify(ProgressListener progress) throws IOException
+	{
+		checkOpen();
+		commit();
+
+		byte[] header = keys.header().encode();
+		boolean headerIntact = Arrays.equals(header, ChannelIO.readFully(channel, 0, ContainerHeader.AREA_SIZE))
+				&& Arrays.equals(header, ChannelIO.readFully(channel, HEADER_B_OFFSET, ContainerHeader.AREA_SIZE));
+
+		long currentOffset = SUPERBLOCK_OFFSET + (long) current.slot() * Superblock.SIZE;
+		long otherOffset = SUPERBLOCK_OFFSET + (long) (1 - current.slot()) * Superblock.SIZE;
+		Superblock onDisk = Superblock.decode(ChannelIO.readFully(channel, currentOffset, Superblock.SIZE), keys);
+		Superblock other = Superblock.decode(ChannelIO.readFully(channel, otherOffset, Superblock.SIZE), keys);
+		boolean stateIntact = onDisk != null && onDisk.generation() == current.generation()
+				&& Arrays.equals(onDisk.indexSalt(), current.indexSalt()) && onDisk.indexExtents().equals(current.indexExtents())
+				&& indexOnDiskEquals(Index.encode(items));
+		boolean olderStateWiped = false;
+		if (other != null)
+		{
+			if (other.generation() < current.generation())
+			{
+				RandomFill.fill(channel, List.of(new Extent(otherOffset, Superblock.SIZE)), ProgressListener.NONE);
+				channel.force(true);
+				olderStateWiped = true;
+			}
+			else
+				stateIntact = false; // a state this session did not write
+		}
+
+		long total = 0;
+		for (Index.Item it : items.values())
+			total += it.entry().size();
+		progress.progress(0, total);
+		List<String> damaged = new ArrayList<>();
+		byte[] buffer = new byte[64 * 1024];
+		long done = 0;
+		for (Index.Item it : items.values())
+		{
+			long start = done;
+			try (InputStream in = read(it.entry().path()))
+			{
+				int n;
+				while ((n = in.read(buffer)) != -1)
+				{
+					done += n;
+					progress.progress(done, total);
+				}
+			}
+			catch (IntegrityException e)
+			{
+				damaged.add(it.entry().path());
+			}
+			done = start + it.entry().size();
+			progress.progress(done, total);
+		}
+		return new VerificationReport(items.size(), total, damaged, headerIntact, stateIntact, olderStateWiped);
+	}
+
+	/** True if the index the current superblock points to decrypts to exactly {@code expected}. */
+	private boolean indexOnDiskEquals(byte[] expected) throws IOException
+	{
+		try (InputStream in = openStream(current.indexSalt(), current.indexExtents(), INDEX_AAD))
+		{
+			return Arrays.equals(expected, in.readAllBytes());
+		}
+		catch (IntegrityException e)
+		{
+			return false;
+		}
+	}
+
 	// ================================================================== key slots
 
 	/** The current header, e.g. to show the key slots. */
@@ -1269,6 +1351,12 @@ public final class Container implements Closeable
 	byte[] rawBytes(long offset, int length) throws IOException
 	{
 		return ChannelIO.readFully(channel, offset, length);
+	}
+
+	/** For tests: changes the file while it is open, as another program could (POSIX locks are advisory). */
+	void rawWrite(long offset, byte[] data) throws IOException
+	{
+		ChannelIO.writeFully(channel, data, offset);
 	}
 
 	/** For tests: where a file's encrypted content lies. */

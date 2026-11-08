@@ -838,6 +838,113 @@ class ContainerTest
 		Container.open(file, key).close();
 	}
 
+	// ================================================================== verification
+
+	@Test
+	void verifyReadsEveryFileOfAnIntactContainer() throws Exception
+	{
+		try (Container c = create())
+		{
+			add(c, "empty", new byte[0]);
+			add(c, "a/large", random(300_000)); // several chunks
+			add(c, "b", random(10));
+			// Not committed yet: verify commits first and checks what is on disk.
+			long[] last = new long[2];
+			VerificationReport r = c.verify((done, total) -> {
+				last[0] = done;
+				last[1] = total;
+			});
+			assertFalse(c.hasUncommittedChanges());
+			assertEquals(3, r.files());
+			assertEquals(300_010, r.bytes());
+			assertEquals(List.of(), r.damaged());
+			assertTrue(r.headerIntact());
+			assertTrue(r.stateIntact());
+			assertFalse(r.olderStateWiped());
+			assertTrue(r.intact());
+			assertEquals(300_010, last[0]);
+			assertEquals(300_010, last[1]);
+		}
+		try (Container c = open())
+		{
+			assertTrue(c.verify(ProgressListener.NONE).intact(), "also right after opening");
+		}
+	}
+
+	@Test
+	void verifyNamesDamagedFiles() throws Exception
+	{
+		try (Container c = create())
+		{
+			add(c, "fine", random(1000));
+			add(c, "damaged", random(100_000));
+			c.commit();
+			Extent e = c.extentsOf("damaged").get(0);
+			byte[] b = c.rawBytes(e.offset() + 70_000, 1);
+			b[0] ^= 1;
+			c.rawWrite(e.offset() + 70_000, b);
+
+			VerificationReport r = c.verify(ProgressListener.NONE);
+			assertEquals(List.of("damaged"), r.damaged());
+			assertEquals(2, r.files());
+			assertTrue(r.headerIntact());
+			assertTrue(r.stateIntact());
+			assertFalse(r.intact());
+		}
+	}
+
+	@Test
+	void verifyNoticesChangesMadeWhileOpen() throws Exception
+	{
+		try (Container c = create())
+		{
+			byte[] b = c.rawBytes(Container.HEADER_B_OFFSET + 40, 1);
+			b[0] ^= 1;
+			c.rawWrite(Container.HEADER_B_OFFSET + 40, b);
+			VerificationReport r = c.verify(ProgressListener.NONE);
+			assertFalse(r.headerIntact());
+			assertTrue(r.stateIntact());
+		}
+		Files.delete(file);
+		try (Container c = create())
+		{
+			// The only commit so far (generation 1) is in slot 1.
+			long current = Container.SUPERBLOCK_OFFSET + Superblock.SIZE;
+			byte[] b = c.rawBytes(current + 30, 1);
+			b[0] ^= 1;
+			c.rawWrite(current + 30, b);
+			VerificationReport r = c.verify(ProgressListener.NONE);
+			assertTrue(r.headerIntact());
+			assertFalse(r.stateIntact());
+			assertFalse(r.intact());
+		}
+	}
+
+	@Test
+	void verifyRemovesAnOlderStateThatStillDecrypts() throws Exception
+	{
+		try (Container c = create())
+		{
+			add(c, "first", random(10));
+			c.commit(); // generation 2, slot 0
+			byte[] older = c.rawBytes(Container.SUPERBLOCK_OFFSET, Superblock.SIZE);
+			c.delete("first");
+			c.commit(); // generation 3, slot 1; slot 0 is wiped
+			assertMostlyDifferent(older, c.rawBytes(Container.SUPERBLOCK_OFFSET, Superblock.SIZE));
+
+			c.rawWrite(Container.SUPERBLOCK_OFFSET, older); // e.g. a restored block, or a crash before the wipe
+			VerificationReport r = c.verify(ProgressListener.NONE);
+			assertTrue(r.olderStateWiped());
+			assertTrue(r.intact());
+			assertMostlyDifferent(older, c.rawBytes(Container.SUPERBLOCK_OFFSET, Superblock.SIZE));
+			assertFalse(c.verify(ProgressListener.NONE).olderStateWiped(), "nothing left the second time");
+		}
+		try (Container c = open())
+		{
+			assertTrue(c.list().isEmpty(), "the deleted file stays deleted");
+		}
+	}
+
 	@Test
 	void closedContainerCannotBeUsed() throws Exception
 	{

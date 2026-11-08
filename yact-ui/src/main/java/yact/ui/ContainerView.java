@@ -139,6 +139,12 @@ final class ContainerView extends BorderPane
 		return container.file();
 	}
 
+	/** The open container; use it on the worker thread only. */
+	Container container()
+	{
+		return container;
+	}
+
 	// ================================================================== layout
 
 	private ToolBar toolbar()

@@ -126,6 +126,12 @@ class UiScreenshots
 		pause(500);
 		save("07-container", stage.getScene());
 		shootDialog("08-access", () -> view.get().manageAccess());
+		// Security check of this (unpackaged) installation and the container with its deliberately weak test password.
+		SecurityCheck.Result check = SecurityCheck.run(c, ProgressListener.NONE);
+		if (check.worst() != SecurityCheck.Level.CRITICAL)
+			throw new AssertionError("the 64 KiB test password must be reported: " + check.findings());
+		shootDialog("14-security-check", () -> SecurityCheckDialog.show(stage, check, fix -> {
+		}));
 
 		// End to end through the UI logic: import a folder via the worker, as a drop or "Add folder" would.
 		Path src = Files.createDirectories(work.resolve("Rechnungen/2026"));

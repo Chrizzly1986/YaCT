@@ -50,12 +50,15 @@ public final class Launcher
 		javafx.application.Application.launch(YactApp.class, args);
 	}
 
-	/** Crypto primitives, and locale data for every translated language. */
+	/**
+	 * Crypto primitives, locale data for every translated language, and the installation part of the
+	 * security check (the same as Help → Security check). Fails on anything critical.
+	 */
 	static boolean selfTest()
 	{
 		System.out.println("YaCT " + YactApp.VERSION + ", Java " + Runtime.version());
-		System.out.println("  [ OK ] no injected agents or JVM options");
-		List<CryptoCapabilities.Capability> caps = CryptoCapabilities.check();
+		SecurityCheck.Environment env = SecurityCheck.environment();
+		List<CryptoCapabilities.Capability> caps = env.crypto();
 		for (CryptoCapabilities.Capability c : caps)
 			System.out.printf("  [%s] %-20s %s%n", c.available() ? " OK " : "FAIL", c.name(), c.detail());
 
@@ -69,7 +72,19 @@ public final class Launcher
 			locales &= ok;
 			System.out.printf("  [%s] locale %-13s %s%n", ok ? " OK " : "FAIL", lang, month);
 		}
-		boolean all = CryptoCapabilities.allAvailable(caps) && locales;
+		boolean critical = false;
+		for (SecurityCheck.Finding f : SecurityCheck.evaluate(env))
+		{
+			critical |= f.level() == SecurityCheck.Level.CRITICAL;
+			System.out.printf("  [%s] %s%n", switch (f.level())
+			{
+				case OK -> " OK ";
+				case INFO -> "NOTE";
+				case WARNING -> "WARN";
+				case CRITICAL -> "FAIL";
+			}, f.text());
+		}
+		boolean all = CryptoCapabilities.allAvailable(caps) && locales && !critical;
 		System.out.println(all ? "All checks passed." : "Some checks FAILED.");
 		return all;
 	}

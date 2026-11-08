@@ -7,3 +7,10 @@
 .status-bar { -fx-background-color: derive(-fx-base, -4%); -fx-border-color: derive(-fx-base, -15%) transparent transparent transparent; }
 .tree-table-row-cell.directory { -fx-font-weight: bold; }
 .fingerprint { -fx-font-family: monospace; -fx-font-size: 1.15em; }
+.check-badge { -fx-min-width: 22; -fx-min-height: 22; -fx-pref-width: 22; -fx-pref-height: 22; -fx-max-width: 22; -fx-max-height: 22; -fx-background-radius: 11; -fx-alignment: center; -fx-text-fill: white; -fx-font-weight: bold; }
+.check-OK { -fx-background-color: #2e7d32; }
+.check-INFO { -fx-background-color: #1565c0; }
+.check-WARNING { -fx-background-color: #e65100; }
+.check-CRITICAL { -fx-background-color: #b00020; }
+.check-summary { -fx-font-size: 1.2em; -fx-font-weight: bold; -fx-graphic-text-gap: 10; }
+.check-summary-CRITICAL { -fx-text-fill: #b00020; }

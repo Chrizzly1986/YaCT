@@ -18,9 +18,7 @@ import javafx.application.Platform;
 import javafx.beans.binding.BooleanBinding;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.ObjectProperty;
-import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.beans.property.SimpleObjectProperty;
-import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -32,8 +30,6 @@ import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
-import javafx.scene.control.TableColumn;
-import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCombination;
@@ -41,8 +37,6 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import yact.core.container.Container;
-import yact.core.crypto.CryptoCapabilities;
-import yact.core.crypto.CryptoCapabilities.Capability;
 import yact.core.format.InvalidCredentialsException;
 import yact.core.pq.HybridKeyPair;
 import yact.core.pq.KeyFiles;
@@ -138,9 +132,9 @@ public class YactApp extends Application
 		keyPair.disableProperty().bind(busy);
 		Menu keys = new Menu(Messages.get("menu.keys"), null, keyPair);
 
-		MenuItem selfTest = item("menu.selfTest", this::selfTest, null);
-		selfTest.disableProperty().bind(busy);
-		Menu help = new Menu(Messages.get("menu.help"), null, selfTest, item("menu.about", this::about, null));
+		MenuItem check = item("menu.securityCheck", this::securityCheck, null);
+		check.disableProperty().bind(busy);
+		Menu help = new Menu(Messages.get("menu.help"), null, check, new SeparatorMenuItem(), item("menu.about", this::about, null));
 
 		return new MenuBar(file, containerMenu, keys, help);
 	}
@@ -167,7 +161,8 @@ public class YactApp extends Application
 		Button create = startButton("start.new", this::newContainer);
 		Button open = startButton("start.open", this::openContainer);
 		Button keyPair = startButton("start.keyPair", this::newKeyPair);
-		VBox box = new VBox(14, logo, title, subtitle, create, open, keyPair);
+		Button check = startButton("start.securityCheck", this::securityCheck);
+		VBox box = new VBox(14, logo, title, subtitle, create, open, keyPair, check);
 		box.setAlignment(Pos.CENTER);
 		box.setPadding(new Insets(40));
 		root.setCenter(box);
@@ -349,33 +344,19 @@ public class YactApp extends Application
 
 	// ================================================================== help
 
-	private void selfTest()
+	/** Checks this installation and, if one is open, the container; offers to fix what YaCT can fix. */
+	private void securityCheck()
 	{
-		worker.submit(Job.<List<Capability>>of(Messages.get("menu.selfTest"), false, job -> CryptoCapabilities.check()), caps -> {
-			TableView<Capability> table = new TableView<>(FXCollections.observableList(caps));
-			table.getColumns().add(column(Messages.get("selftest.status"),
-					c -> c.available() ? Messages.get("selftest.ok") : Messages.get("selftest.failed")));
-			table.getColumns().add(column(Messages.get("selftest.algorithm"), Capability::name));
-			table.getColumns().add(column("PQ", c -> c.postQuantum() ? "✓" : ""));
-			table.getColumns().add(column(Messages.get("selftest.purpose"), Capability::purpose));
-			table.getColumns().add(column(Messages.get("selftest.detail"), Capability::detail));
-			table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
-			table.setPrefSize(860, 320);
-			Alert a = Dialogs.alert(CryptoCapabilities.allAvailable(caps) ? AlertType.INFORMATION : AlertType.ERROR, "");
-			a.initOwner(stage);
-			a.setTitle(Messages.get("menu.selfTest"));
-			a.setHeaderText(Messages.get(CryptoCapabilities.allAvailable(caps) ? "selftest.allOk" : "selftest.missing"));
-			a.getDialogPane().setContent(table);
-			a.setResizable(true);
-			a.showAndWait();
-		});
-	}
-
-	private static TableColumn<Capability, String> column(String title, java.util.function.Function<Capability, String> f)
-	{
-		TableColumn<Capability, String> col = new TableColumn<>(title);
-		col.setCellValueFactory(c -> new ReadOnlyStringWrapper(f.apply(c.getValue())));
-		return col;
+		ContainerView v = view.get();
+		yact.core.container.Container c = v == null ? null : v.container();
+		worker.submit(Job.<SecurityCheck.Result>of(Messages.get("job.securityCheck"), true, job -> {
+			job.message(Messages.get(c == null ? "job.securityCheckInstall" : "job.securityCheckContainer"));
+			return SecurityCheck.run(c, job.progress());
+		}), result -> SecurityCheckDialog.show(stage, result, fix -> worker.submit(
+				Job.<Object>of(Messages.get("job.securityCheck"), false, job -> {
+					fix.run();
+					return null;
+				}), x -> securityCheck())));
 	}
 
 	private void about()
